@@ -37,6 +37,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	sdkpb "go.temporal.io/api/sdk/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -45,6 +46,7 @@ import (
 	workflowspb "go.temporal.io/server/api/workflow/v1"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/clock"
+	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/primitives/timestamp"
 	"go.temporal.io/server/service/history/tests"
@@ -154,6 +156,7 @@ func (s *historyBuilderSuite) SetupTest() {
 		s.version,
 		s.nextEventID,
 		nil,
+		metrics.NoopMetricsHandler,
 	)
 }
 
@@ -255,6 +258,7 @@ func (s *historyBuilderSuite) TestWorkflowExecutionStarted() {
 				OriginalExecutionRunId:          originalRunID,
 				Memo:                            testMemo,
 				SearchAttributes:                testSearchAttributes,
+				WorkflowId:                      testWorkflowID,
 
 				ParentWorkflowNamespace:   testParentNamespaceName,
 				ParentWorkflowNamespaceId: testParentNamespaceID,
@@ -320,6 +324,7 @@ func (s *historyBuilderSuite) TestWorkflowExecutionSignaled() {
 		testPayloads,
 		testIdentity,
 		testHeader,
+		false,
 	)
 	s.Equal(event, s.flush())
 	s.Equal(&historypb.HistoryEvent{
@@ -454,13 +459,14 @@ func (s *historyBuilderSuite) TestWorkflowExecutionFailed() {
 	attributes := &commandpb.FailWorkflowExecutionCommandAttributes{
 		Failure: testFailure,
 	}
-	event := s.historyBuilder.AddFailWorkflowEvent(
+	event, batchID := s.historyBuilder.AddFailWorkflowEvent(
 		workflowTaskCompletionEventID,
 		retryState,
 		attributes,
 		"",
 	)
 	s.Equal(event, s.flush())
+	s.Equal(batchID, event.EventId)
 	s.Equal(&historypb.HistoryEvent{
 		EventId:   s.nextEventID,
 		TaskId:    s.nextTaskID,
@@ -639,6 +645,8 @@ func (s *historyBuilderSuite) TestWorkflowTaskStarted() {
 		testRequestID,
 		testIdentity,
 		s.now,
+		false,
+		123678,
 	)
 	s.Equal(event, s.flush())
 	s.Equal(&historypb.HistoryEvent{
@@ -649,9 +657,11 @@ func (s *historyBuilderSuite) TestWorkflowTaskStarted() {
 		Version:   s.version,
 		Attributes: &historypb.HistoryEvent_WorkflowTaskStartedEventAttributes{
 			WorkflowTaskStartedEventAttributes: &historypb.WorkflowTaskStartedEventAttributes{
-				ScheduledEventId: scheduledEventID,
-				Identity:         testIdentity,
-				RequestId:        testRequestID,
+				ScheduledEventId:     scheduledEventID,
+				Identity:             testIdentity,
+				RequestId:            testRequestID,
+				SuggestContinueAsNew: false,
+				HistorySizeBytes:     123678,
 			},
 		},
 	}, event)
@@ -661,11 +671,16 @@ func (s *historyBuilderSuite) TestWorkflowTaskCompleted() {
 	scheduledEventID := rand.Int63()
 	startedEventID := rand.Int63()
 	checksum := "random checksum"
+	sdkMetadata := &sdkpb.WorkflowTaskCompletedMetadata{CoreUsedFlags: []uint32{1, 2, 3}, LangUsedFlags: []uint32{4, 5, 6}}
+	meteringMeta := &commonpb.MeteringMetadata{NonfirstLocalActivityExecutionAttempts: 42}
 	event := s.historyBuilder.AddWorkflowTaskCompletedEvent(
 		scheduledEventID,
 		startedEventID,
 		testIdentity,
 		checksum,
+		&commonpb.WorkerVersionStamp{BuildId: "build_id_9"},
+		sdkMetadata,
+		meteringMeta,
 	)
 	s.Equal(event, s.flush())
 	s.Equal(&historypb.HistoryEvent{
@@ -680,6 +695,9 @@ func (s *historyBuilderSuite) TestWorkflowTaskCompleted() {
 				StartedEventId:   startedEventID,
 				Identity:         testIdentity,
 				BinaryChecksum:   checksum,
+				WorkerVersion:    &commonpb.WorkerVersionStamp{BuildId: "build_id_9"},
+				SdkMetadata:      sdkMetadata,
+				MeteringMetadata: meteringMeta,
 			},
 		},
 	}, event)
@@ -2084,6 +2102,7 @@ func (s *historyBuilderSuite) testWireEventIDs(
 		s.version,
 		s.nextEventID,
 		nil,
+		metrics.NoopMetricsHandler,
 	)
 	s.historyBuilder.dbBufferBatch = []*historypb.HistoryEvent{startEvent}
 	s.historyBuilder.memEventsBatches = nil
@@ -2130,6 +2149,7 @@ func (s *historyBuilderSuite) TestHasBufferEvent() {
 		s.version,
 		s.nextEventID,
 		nil,
+		metrics.NoopMetricsHandler,
 	)
 	historyBuilder.dbBufferBatch = nil
 	historyBuilder.memEventsBatches = nil
@@ -2200,24 +2220,30 @@ func (s *historyBuilderSuite) TestBufferEvent() {
 		enumspb.EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED:             true,
 		enumspb.EVENT_TYPE_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_INITIATED:         true,
 		enumspb.EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES:                    true,
-		enumspb.EVENT_TYPE_WORKFLOW_UPDATE_REJECTED:                             true,
-		enumspb.EVENT_TYPE_WORKFLOW_UPDATE_ACCEPTED:                             true,
-		enumspb.EVENT_TYPE_WORKFLOW_UPDATE_COMPLETED:                            true,
 		enumspb.EVENT_TYPE_WORKFLOW_PROPERTIES_MODIFIED:                         true,
 	}
 
-	// other events will not be assign event ID immediately
+	// events corresponding to message from client will be assign event ID immediately
+	messageEvents := map[enumspb.EventType]bool{
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_REJECTED:  true,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED:  true,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED: true,
+	}
+
+	// other events will not be assign event ID immediately (created automatically)
 	otherEvents := map[enumspb.EventType]bool{}
-OtherEventsLoop:
 	for _, eventType := range enumspb.EventType_value {
 		if _, ok := workflowEvents[enumspb.EventType(eventType)]; ok {
-			continue OtherEventsLoop
+			continue
 		}
 		if _, ok := workflowTaskEvents[enumspb.EventType(eventType)]; ok {
-			continue OtherEventsLoop
+			continue
 		}
 		if _, ok := commandEvents[enumspb.EventType(eventType)]; ok {
-			continue OtherEventsLoop
+			continue
+		}
+		if _, ok := messageEvents[enumspb.EventType(eventType)]; ok {
+			continue
 		}
 		otherEvents[enumspb.EventType(eventType)] = true
 	}
@@ -2232,17 +2258,28 @@ OtherEventsLoop:
 	for eventType := range commandEvents {
 		s.False(s.historyBuilder.bufferEvent(eventType))
 	}
+	for eventType := range messageEvents {
+		s.False(s.historyBuilder.bufferEvent(eventType))
+	}
 	// other events will return false
 	for eventType := range otherEvents {
 		s.True(s.historyBuilder.bufferEvent(eventType))
 	}
 
-	commandTypes := enumspb.CommandType_name
-	delete(commandTypes, 0) // Remove Unspecified.
+	commandsWithEventsCount := 0
+	for ct, _ := range enumspb.CommandType_name {
+		commandType := enumspb.CommandType(ct)
+		// Unspecified is not counted.
+		// ProtocolMessage command doesn't have corresponding event.
+		if commandType == enumspb.COMMAND_TYPE_UNSPECIFIED || commandType == enumspb.COMMAND_TYPE_PROTOCOL_MESSAGE {
+			continue
+		}
+		commandsWithEventsCount++
+	}
 	s.Equal(
-		len(commandTypes),
+		commandsWithEventsCount,
 		len(commandEvents),
-		"This assertion will be broken a new command is added and no corresponding logic added to HistoryBuilder.bufferEvent",
+		"This assertion is broken when a new command is added and no corresponding logic for corresponding command event is added to HistoryBuilder.bufferEvent",
 	)
 }
 
@@ -2281,6 +2318,42 @@ func (s *historyBuilderSuite) TestReorder() {
 		append(nonReorderEvents, reorderEvents...),
 		s.historyBuilder.reorderBuffer(append(reorderEvents, nonReorderEvents...)),
 	)
+}
+
+func (s *historyBuilderSuite) TestBufferSize_Memory() {
+	s.Assert().Zero(s.historyBuilder.NumBufferedEvents())
+	s.Assert().Zero(s.historyBuilder.SizeInBytesOfBufferedEvents())
+	s.historyBuilder.AddWorkflowExecutionSignaledEvent(
+		"signal-name",
+		&commonpb.Payloads{},
+		"identity",
+		&commonpb.Header{},
+		true,
+	)
+	s.Assert().Equal(1, s.historyBuilder.NumBufferedEvents())
+	// the size of the proto  is non-deterministic, so just assert that it's non-zero, and it isn't really high
+	s.Assert().Greater(s.historyBuilder.SizeInBytesOfBufferedEvents(), 0)
+	s.Assert().Less(s.historyBuilder.SizeInBytesOfBufferedEvents(), 100)
+	s.flush()
+	s.Assert().Zero(s.historyBuilder.NumBufferedEvents())
+	s.Assert().Zero(s.historyBuilder.SizeInBytesOfBufferedEvents())
+}
+
+func (s *historyBuilderSuite) TestBufferSize_DB() {
+	s.Assert().Zero(s.historyBuilder.NumBufferedEvents())
+	s.Assert().Zero(s.historyBuilder.SizeInBytesOfBufferedEvents())
+	s.historyBuilder.dbBufferBatch = []*historypb.HistoryEvent{{
+		EventType: enumspb.EVENT_TYPE_TIMER_FIRED,
+		EventId:   common.BufferedEventID,
+		TaskId:    common.EmptyEventTaskID,
+	}}
+	s.Assert().Equal(1, s.historyBuilder.NumBufferedEvents())
+	// the size of the proto  is non-deterministic, so just assert that it's non-zero, and it isn't really high
+	s.Assert().Greater(s.historyBuilder.SizeInBytesOfBufferedEvents(), 0)
+	s.Assert().Less(s.historyBuilder.SizeInBytesOfBufferedEvents(), 100)
+	s.flush()
+	s.Assert().Zero(s.historyBuilder.NumBufferedEvents())
+	s.Assert().Zero(s.historyBuilder.SizeInBytesOfBufferedEvents())
 }
 
 func (s *historyBuilderSuite) assertEventIDTaskID(

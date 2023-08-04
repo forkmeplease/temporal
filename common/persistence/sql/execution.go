@@ -42,6 +42,7 @@ import (
 
 type sqlExecutionStore struct {
 	SqlStore
+	p.HistoryBranchUtilImpl
 }
 
 var _ p.ExecutionStore = (*sqlExecutionStore)(nil)
@@ -675,14 +676,11 @@ func (m *sqlExecutionStore) setWorkflowExecutionTx(
 	shardID := request.ShardID
 	setSnapshot := request.SetWorkflowSnapshot
 
-	if err := applyWorkflowSnapshotTxAsReset(ctx,
+	return applyWorkflowSnapshotTxAsReset(ctx,
 		tx,
 		shardID,
 		&setSnapshot,
-	); err != nil {
-		return err
-	}
-	return nil
+	)
 }
 
 func (m *sqlExecutionStore) ListConcreteExecutions(

@@ -35,7 +35,7 @@ import (
 
 	"go.temporal.io/server/api/historyservice/v1"
 	replicationspb "go.temporal.io/server/api/replication/v1"
-	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/collection"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/service/history/events"
 	"go.temporal.io/server/service/history/tasks"
@@ -44,8 +44,6 @@ import (
 type (
 	// Engine represents an interface for managing workflow execution history.
 	Engine interface {
-		common.Daemon
-
 		StartWorkflowExecution(ctx context.Context, request *historyservice.StartWorkflowExecutionRequest) (*historyservice.StartWorkflowExecutionResponse, error)
 		GetMutableState(ctx context.Context, request *historyservice.GetMutableStateRequest) (*historyservice.GetMutableStateResponse, error)
 		PollMutableState(ctx context.Context, request *historyservice.PollMutableStateRequest) (*historyservice.PollMutableStateResponse, error)
@@ -68,6 +66,8 @@ type (
 		DeleteWorkflowExecution(ctx context.Context, deleteRequest *historyservice.DeleteWorkflowExecutionRequest) (*historyservice.DeleteWorkflowExecutionResponse, error)
 		ResetWorkflowExecution(ctx context.Context, request *historyservice.ResetWorkflowExecutionRequest) (*historyservice.ResetWorkflowExecutionResponse, error)
 		ScheduleWorkflowTask(ctx context.Context, request *historyservice.ScheduleWorkflowTaskRequest) error
+		IsActivityTaskValid(ctx context.Context, request *historyservice.IsActivityTaskValidRequest) (*historyservice.IsActivityTaskValidResponse, error)
+		IsWorkflowTaskValid(ctx context.Context, request *historyservice.IsWorkflowTaskValidRequest) (*historyservice.IsWorkflowTaskValidResponse, error)
 		VerifyFirstWorkflowTaskScheduled(ctx context.Context, request *historyservice.VerifyFirstWorkflowTaskScheduledRequest) error
 		RecordChildExecutionCompleted(ctx context.Context, request *historyservice.RecordChildExecutionCompletedRequest) (*historyservice.RecordChildExecutionCompletedResponse, error)
 		VerifyChildExecutionCompletionRecorded(ctx context.Context, request *historyservice.VerifyChildExecutionCompletionRecordedRequest) (*historyservice.VerifyChildExecutionCompletionRecordedResponse, error)
@@ -86,9 +86,30 @@ type (
 		RefreshWorkflowTasks(ctx context.Context, namespaceUUID namespace.ID, execution commonpb.WorkflowExecution) error
 		GenerateLastHistoryReplicationTasks(ctx context.Context, request *historyservice.GenerateLastHistoryReplicationTasksRequest) (*historyservice.GenerateLastHistoryReplicationTasksResponse, error)
 		GetReplicationStatus(ctx context.Context, request *historyservice.GetReplicationStatusRequest) (*historyservice.ShardReplicationStatus, error)
-		UpdateWorkflow(ctx context.Context, request *historyservice.UpdateWorkflowRequest) (*historyservice.UpdateWorkflowResponse, error)
+		UpdateWorkflowExecution(ctx context.Context, request *historyservice.UpdateWorkflowExecutionRequest) (*historyservice.UpdateWorkflowExecutionResponse, error)
+		PollWorkflowExecutionUpdate(ctx context.Context, request *historyservice.PollWorkflowExecutionUpdateRequest) (*historyservice.PollWorkflowExecutionUpdateResponse, error)
 
 		NotifyNewHistoryEvent(event *events.Notification)
-		NotifyNewTasks(clusterName string, tasks map[tasks.Category][]tasks.Task)
+		NotifyNewTasks(tasks map[tasks.Category][]tasks.Task)
+		AddSpeculativeWorkflowTaskTimeoutTask(task *tasks.WorkflowTaskTimeoutTask)
+
+		ReplicationStream
+		Start()
+		Stop()
+	}
+
+	ReplicationStream interface {
+		SubscribeReplicationNotification() (<-chan struct{}, string)
+		UnsubscribeReplicationNotification(string)
+		ConvertReplicationTask(
+			ctx context.Context,
+			task tasks.Task,
+		) (*replicationspb.ReplicationTask, error)
+		GetReplicationTasksIter(
+			ctx context.Context,
+			pollingCluster string,
+			minInclusiveTaskID int64,
+			maxExclusiveTaskID int64,
+		) (collection.Iterator[tasks.Task], error)
 	}
 )

@@ -217,6 +217,34 @@ func (c *metricClient) GetShard(
 	return c.client.GetShard(ctx, request, opts...)
 }
 
+func (c *metricClient) IsActivityTaskValid(
+	ctx context.Context,
+	request *historyservice.IsActivityTaskValidRequest,
+	opts ...grpc.CallOption,
+) (_ *historyservice.IsActivityTaskValidResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, metrics.HistoryClientIsActivityTaskValidScope)
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.IsActivityTaskValid(ctx, request, opts...)
+}
+
+func (c *metricClient) IsWorkflowTaskValid(
+	ctx context.Context,
+	request *historyservice.IsWorkflowTaskValidRequest,
+	opts ...grpc.CallOption,
+) (_ *historyservice.IsWorkflowTaskValidResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, metrics.HistoryClientIsWorkflowTaskValidScope)
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.IsWorkflowTaskValid(ctx, request, opts...)
+}
+
 func (c *metricClient) MergeDLQMessages(
 	ctx context.Context,
 	request *historyservice.MergeDLQMessagesRequest,
@@ -243,6 +271,20 @@ func (c *metricClient) PollMutableState(
 	}()
 
 	return c.client.PollMutableState(ctx, request, opts...)
+}
+
+func (c *metricClient) PollWorkflowExecutionUpdate(
+	ctx context.Context,
+	request *historyservice.PollWorkflowExecutionUpdateRequest,
+	opts ...grpc.CallOption,
+) (_ *historyservice.PollWorkflowExecutionUpdateResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, metrics.HistoryClientPollWorkflowExecutionUpdateScope)
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.PollWorkflowExecutionUpdate(ctx, request, opts...)
 }
 
 func (c *metricClient) PurgeDLQMessages(
@@ -411,6 +453,20 @@ func (c *metricClient) ReplicateEventsV2(
 	}()
 
 	return c.client.ReplicateEventsV2(ctx, request, opts...)
+}
+
+func (c *metricClient) ReplicateWorkflowState(
+	ctx context.Context,
+	request *historyservice.ReplicateWorkflowStateRequest,
+	opts ...grpc.CallOption,
+) (_ *historyservice.ReplicateWorkflowStateResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, metrics.HistoryClientReplicateWorkflowStateScope)
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.ReplicateWorkflowState(ctx, request, opts...)
 }
 
 func (c *metricClient) RequestCancelWorkflowExecution(
@@ -623,18 +679,18 @@ func (c *metricClient) TerminateWorkflowExecution(
 	return c.client.TerminateWorkflowExecution(ctx, request, opts...)
 }
 
-func (c *metricClient) UpdateWorkflow(
+func (c *metricClient) UpdateWorkflowExecution(
 	ctx context.Context,
-	request *historyservice.UpdateWorkflowRequest,
+	request *historyservice.UpdateWorkflowExecutionRequest,
 	opts ...grpc.CallOption,
-) (_ *historyservice.UpdateWorkflowResponse, retError error) {
+) (_ *historyservice.UpdateWorkflowExecutionResponse, retError error) {
 
-	metricsHandler, startTime := c.startMetricsRecording(ctx, metrics.HistoryClientUpdateWorkflowScope)
+	metricsHandler, startTime := c.startMetricsRecording(ctx, metrics.HistoryClientUpdateWorkflowExecutionScope)
 	defer func() {
 		c.finishMetricsRecording(metricsHandler, startTime, retError)
 	}()
 
-	return c.client.UpdateWorkflow(ctx, request, opts...)
+	return c.client.UpdateWorkflowExecution(ctx, request, opts...)
 }
 
 func (c *metricClient) VerifyChildExecutionCompletionRecorded(

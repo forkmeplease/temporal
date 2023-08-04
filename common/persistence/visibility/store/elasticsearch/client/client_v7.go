@@ -53,7 +53,7 @@ type (
 )
 
 const (
-	pointInTimeSupportedFlavor = "default" // the other flavor is "oss".
+	pointInTimeSupportedFlavor = "default" // the other flavor is "oss"
 )
 
 var (
@@ -73,6 +73,7 @@ func newClient(cfg *Config, httpClient *http.Client, logger log.Logger) (*client
 		elastic.SetRetrier(elastic.NewBackoffRetrier(elastic.NewExponentialBackoff(128*time.Millisecond, 513*time.Millisecond))),
 		// Critical to ensure decode of int64 won't lose precision.
 		elastic.SetDecoder(&elastic.NumberDecoder{}),
+		elastic.SetGzip(true),
 	}
 
 	options = append(options, getLoggerOptions(cfg.LogLevel, logger)...)
@@ -142,7 +143,7 @@ func (c *clientImpl) Search(ctx context.Context, p *SearchParameters) (*elastic.
 	}
 
 	searchService := c.esClient.Search().SearchSource(searchSource)
-	// When pit.id is specified index must not be used.
+	// If pit is specified, index must not be used.
 	if p.PointInTime == nil {
 		searchService.Index(p.Index)
 	}
@@ -150,30 +151,32 @@ func (c *clientImpl) Search(ctx context.Context, p *SearchParameters) (*elastic.
 	return searchService.Do(ctx)
 }
 
-func (c *clientImpl) OpenScroll(ctx context.Context, p *SearchParameters, keepAliveInterval string) (*elastic.SearchResult, error) {
+func (c *clientImpl) OpenScroll(
+	ctx context.Context,
+	p *SearchParameters,
+	keepAliveInterval string,
+) (*elastic.SearchResult, error) {
 	scrollService := elastic.NewScrollService(c.esClient).
 		Index(p.Index).
 		Query(p.Query).
 		SortBy(p.Sorter...).
 		KeepAlive(keepAliveInterval)
-
 	if p.PageSize != 0 {
 		scrollService.Size(p.PageSize)
 	}
-
-	searchResult, err := scrollService.Do(ctx)
-	return searchResult, err
+	return scrollService.Do(ctx)
 }
 
-func (c *clientImpl) Scroll(ctx context.Context, scrollID string, keepAliveInterval string) (*elastic.SearchResult, error) {
-	scrollService := elastic.NewScrollService(c.esClient)
-	result, err := scrollService.ScrollId(scrollID).KeepAlive(keepAliveInterval).Do(ctx)
-	return result, err
+func (c *clientImpl) Scroll(
+	ctx context.Context,
+	id string,
+	keepAliveInterval string,
+) (*elastic.SearchResult, error) {
+	return elastic.NewScrollService(c.esClient).ScrollId(id).KeepAlive(keepAliveInterval).Do(ctx)
 }
 
 func (c *clientImpl) CloseScroll(ctx context.Context, id string) error {
-	err := elastic.NewScrollService(c.esClient).ScrollId(id).Clear(ctx)
-	return err
+	return elastic.NewScrollService(c.esClient).ScrollId(id).Clear(ctx)
 }
 
 func (c *clientImpl) IsPointInTimeSupported(ctx context.Context) bool {
@@ -218,6 +221,20 @@ func (c *clientImpl) Count(ctx context.Context, index string, query elastic.Quer
 	return c.esClient.Count(index).Query(query).Do(ctx)
 }
 
+func (c *clientImpl) CountGroupBy(
+	ctx context.Context,
+	index string,
+	query elastic.Query,
+	aggName string,
+	agg elastic.Aggregation,
+) (*elastic.SearchResult, error) {
+	searchSource := elastic.NewSearchSource().
+		Query(query).
+		Size(0).
+		Aggregation(aggName, agg)
+	return c.esClient.Search(index).SearchSource(searchSource).Do(ctx)
+}
+
 func (c *clientImpl) RunBulkProcessor(ctx context.Context, p *BulkProcessorParameters) (BulkProcessor, error) {
 	esBulkProcessor, err := c.esClient.BulkProcessor().
 		Name(p.Name).
@@ -225,9 +242,10 @@ func (c *clientImpl) RunBulkProcessor(ctx context.Context, p *BulkProcessorParam
 		BulkActions(p.BulkActions).
 		BulkSize(p.BulkSize).
 		FlushInterval(p.FlushInterval).
-		Backoff(p.Backoff).
 		Before(p.BeforeFunc).
 		After(p.AfterFunc).
+		// Disable built-in retry logic because visibility task processor has its own.
+		RetryItemStatusCodes().
 		Do(ctx)
 
 	return newBulkProcessor(esBulkProcessor), err
@@ -375,7 +393,7 @@ func buildMappingBody(mapping map[string]enumspb.IndexedValueType) map[string]in
 		switch fieldType {
 		case enumspb.INDEXED_VALUE_TYPE_TEXT:
 			typeMap = map[string]interface{}{"type": "text"}
-		case enumspb.INDEXED_VALUE_TYPE_KEYWORD:
+		case enumspb.INDEXED_VALUE_TYPE_KEYWORD, enumspb.INDEXED_VALUE_TYPE_KEYWORD_LIST:
 			typeMap = map[string]interface{}{"type": "keyword"}
 		case enumspb.INDEXED_VALUE_TYPE_INT:
 			typeMap = map[string]interface{}{"type": "long"}

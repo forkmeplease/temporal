@@ -34,6 +34,7 @@ import (
 	"go.temporal.io/server/service/history/api"
 	"go.temporal.io/server/service/history/shard"
 	"go.temporal.io/server/service/history/tasks"
+	"go.temporal.io/server/service/history/workflow"
 )
 
 func GenerateTask(
@@ -57,13 +58,15 @@ func GenerateTask(
 			request.Execution.WorkflowId,
 			request.Execution.RunId,
 		),
+		workflow.LockPriorityHigh,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { wfContext.GetReleaseFn()(retError) }()
 
-	task, err := wfContext.GetMutableState().GenerateMigrationTasks()
+	mutableState := wfContext.GetMutableState()
+	task, stateTransitionCount, err := mutableState.GenerateMigrationTasks()
 	if err != nil {
 		return nil, err
 	}
@@ -81,5 +84,7 @@ func GenerateTask(
 	if err != nil {
 		return nil, err
 	}
-	return &historyservice.GenerateLastHistoryReplicationTasksResponse{}, nil
+	return &historyservice.GenerateLastHistoryReplicationTasksResponse{
+		StateTransitionCount: stateTransitionCount,
+	}, nil
 }

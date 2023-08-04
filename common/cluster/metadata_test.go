@@ -53,6 +53,7 @@ type (
 		failoverVersionIncrement int64
 		clusterName              string
 		secondClusterName        string
+		thirdClusterName         string
 	}
 )
 
@@ -77,18 +78,28 @@ func (s *metadataSuite) SetupTest() {
 	s.failoverVersionIncrement = 100
 	s.clusterName = uuid.New()
 	s.secondClusterName = uuid.New()
+	s.thirdClusterName = uuid.New()
 
 	clusterInfo := map[string]ClusterInformation{
 		s.clusterName: {
 			Enabled:                true,
 			InitialFailoverVersion: int64(1),
 			RPCAddress:             uuid.New(),
+			ShardCount:             1,
 			version:                1,
 		},
 		s.secondClusterName: {
 			Enabled:                true,
 			InitialFailoverVersion: int64(4),
 			RPCAddress:             uuid.New(),
+			ShardCount:             2,
+			version:                1,
+		},
+		s.thirdClusterName: {
+			Enabled:                true,
+			InitialFailoverVersion: int64(5),
+			RPCAddress:             uuid.New(),
+			ShardCount:             1,
 			version:                1,
 		},
 	}
@@ -141,7 +152,7 @@ func (s *metadataSuite) Test_RegisterMetadataChangeCallback() {
 	s.metadata.RegisterMetadataChangeCallback(
 		s,
 		func(oldClusterMetadata map[string]*ClusterInformation, newClusterMetadata map[string]*ClusterInformation) {
-			s.Equal(2, len(newClusterMetadata))
+			s.Equal(3, len(newClusterMetadata))
 		})
 
 	s.metadata.UnRegisterMetadataChangeCallback(s)
@@ -164,26 +175,50 @@ func (s *metadataSuite) Test_RefreshClusterMetadata_Success() {
 		newMetadata, ok = newClusterMetadata[s.secondClusterName]
 		s.True(ok)
 		s.Nil(newMetadata)
+
+		oldMetadata, ok = oldClusterMetadata[s.thirdClusterName]
+		s.True(ok)
+		s.NotNil(oldMetadata)
+		newMetadata, ok = newClusterMetadata[s.thirdClusterName]
+		s.True(ok)
+		s.NotNil(newMetadata)
 	}
 
 	s.mockClusterMetadataStore.EXPECT().ListClusterMetadata(gomock.Any(), gomock.Any()).Return(
 		&persistence.ListClusterMetadataResponse{
 			ClusterMetadata: []*persistence.GetClusterMetadataResponse{
 				{
+					// No change and not include in callback
 					ClusterMetadata: persistencespb.ClusterMetadata{
 						ClusterName:            s.clusterName,
 						IsConnectionEnabled:    true,
 						InitialFailoverVersion: 1,
+						HistoryShardCount:      1,
 						ClusterAddress:         uuid.New(),
 					},
 					Version: 1,
 				},
 				{
+					// Updated, included in callback
+					ClusterMetadata: persistencespb.ClusterMetadata{
+						ClusterName:            s.thirdClusterName,
+						IsConnectionEnabled:    true,
+						InitialFailoverVersion: 1,
+						HistoryShardCount:      1,
+						ClusterAddress:         uuid.New(),
+						Tags:                   map[string]string{"test": "test"},
+					},
+					Version: 2,
+				},
+				{
+					// Newly added, included in callback
 					ClusterMetadata: persistencespb.ClusterMetadata{
 						ClusterName:            id,
 						IsConnectionEnabled:    true,
 						InitialFailoverVersion: 2,
+						HistoryShardCount:      2,
 						ClusterAddress:         uuid.New(),
+						Tags:                   map[string]string{"test": "test"},
 					},
 					Version: 2,
 				},
@@ -191,6 +226,9 @@ func (s *metadataSuite) Test_RefreshClusterMetadata_Success() {
 		}, nil)
 	err := s.metadata.refreshClusterMetadata(context.Background())
 	s.NoError(err)
+	clusterInfo := s.metadata.GetAllClusterInfo()
+	s.Equal("test", clusterInfo[s.thirdClusterName].Tags["test"])
+	s.Equal("test", clusterInfo[id].Tags["test"])
 }
 
 func (s *metadataSuite) Test_ListAllClusterMetadataFromDB_Success() {
@@ -207,6 +245,7 @@ func (s *metadataSuite) Test_ListAllClusterMetadataFromDB_Success() {
 						ClusterName:            s.clusterName,
 						IsConnectionEnabled:    true,
 						InitialFailoverVersion: 1,
+						HistoryShardCount:      1,
 						ClusterAddress:         uuid.New(),
 					},
 					Version: 1,
@@ -225,6 +264,7 @@ func (s *metadataSuite) Test_ListAllClusterMetadataFromDB_Success() {
 						ClusterName:            newClusterName,
 						IsConnectionEnabled:    true,
 						InitialFailoverVersion: 2,
+						HistoryShardCount:      2,
 						ClusterAddress:         uuid.New(),
 					},
 					Version: 2,

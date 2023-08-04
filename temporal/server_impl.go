@@ -29,16 +29,19 @@ import (
 	"fmt"
 	"sync"
 
-	"go.uber.org/fx"
+	"go.uber.org/multierr"
 
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/config"
-	"go.temporal.io/server/common/dynamicconfig"
+	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
+	"go.temporal.io/server/common/metrics"
 	persistenceClient "go.temporal.io/server/common/persistence/client"
+	"go.temporal.io/server/common/primitives"
 	"go.temporal.io/server/common/resolver"
 	"go.temporal.io/server/common/resource"
+	"go.temporal.io/server/common/util"
 )
 
 type (
@@ -50,94 +53,71 @@ type (
 		logger           log.Logger
 		namespaceLogger  resource.NamespaceLogger
 
-		dcCollection *dynamicconfig.Collection
-
 		persistenceConfig          config.Persistence
 		clusterMetadata            *cluster.Config
 		persistenceFactoryProvider persistenceClient.FactoryProviderFn
+		metricsHandler             metrics.Handler
 	}
 )
 
-var ServerFxImplModule = fx.Options(
-	fx.Provide(NewServerFxImpl),
-	fx.Provide(func(src *ServerImpl) Server { return src }),
-)
-
-// NewServer returns a new instance of server that serves one or many services.
+// NewServerFxImpl returns a new instance of server that serves one or many services.
 func NewServerFxImpl(
 	opts *serverOptions,
 	logger log.Logger,
 	namespaceLogger resource.NamespaceLogger,
 	stoppedCh chan interface{},
-	dcCollection *dynamicconfig.Collection,
 	servicesGroup ServicesGroupIn,
 	persistenceConfig config.Persistence,
 	clusterMetadata *cluster.Config,
 	persistenceFactoryProvider persistenceClient.FactoryProviderFn,
+	metricsHandler metrics.Handler,
 ) *ServerImpl {
 	s := &ServerImpl{
 		so:                         opts,
-		servicesMetadata:           servicesGroup.Services,
 		stoppedCh:                  stoppedCh,
 		logger:                     logger,
 		namespaceLogger:            namespaceLogger,
-		dcCollection:               dcCollection,
 		persistenceConfig:          persistenceConfig,
 		clusterMetadata:            clusterMetadata,
 		persistenceFactoryProvider: persistenceFactoryProvider,
+		metricsHandler:             metricsHandler,
+	}
+	for _, svcMeta := range servicesGroup.Services {
+		if svcMeta != nil {
+			s.servicesMetadata = append(s.servicesMetadata, svcMeta)
+		}
 	}
 	return s
 }
 
-// Start temporal server.
-// This function should be called only once, Server doesn't support multiple restarts.
-func (s *ServerImpl) Start() error {
+func (s *ServerImpl) Start(ctx context.Context) error {
 	s.logger.Info("Starting server for services", tag.Value(s.so.serviceNames))
 	s.logger.Debug(s.so.config.String())
 
 	if err := initSystemNamespaces(
-		context.TODO(),
+		ctx,
 		&s.persistenceConfig,
 		s.clusterMetadata.CurrentClusterName,
 		s.so.persistenceServiceResolver,
 		s.persistenceFactoryProvider,
 		s.logger,
 		s.so.customDataStoreFactory,
+		s.metricsHandler,
 	); err != nil {
 		return fmt.Errorf("unable to initialize system namespace: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	for _, svcMeta := range s.servicesMetadata {
-		wg.Add(1)
-		go func(svcMeta *ServicesMetadata) {
-			timeoutCtx, cancelFunc := context.WithTimeout(context.Background(), serviceStartTimeout)
-			defer cancelFunc()
-			svcMeta.App.Start(timeoutCtx)
-			wg.Done()
-		}(svcMeta)
-	}
-	wg.Wait()
-
-	if s.so.blockingStart {
-		// If s.so.interruptCh is nil this will wait forever.
-		interruptSignal := <-s.so.interruptCh
-		s.logger.Info("Received interrupt signal, stopping the server.", tag.Value(interruptSignal))
-		s.Stop()
-	}
-
-	return nil
+	return s.startServices()
 }
 
-// Stop stops the server.
-func (s *ServerImpl) Stop() {
+func (s *ServerImpl) Stop(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Add(len(s.servicesMetadata))
 	close(s.stoppedCh)
 
 	for _, svcMeta := range s.servicesMetadata {
 		go func(svc *ServicesMetadata) {
-			svc.ServiceStopFn()
+			svc.Stop(ctx)
 			wg.Done()
 		}(svcMeta)
 	}
@@ -147,6 +127,41 @@ func (s *ServerImpl) Stop() {
 	if s.so.metricHandler != nil {
 		s.so.metricHandler.Stop(s.logger)
 	}
+	return nil
+}
+
+func (s *ServerImpl) startServices() error {
+	// The membership join time may exceed the configured max join duration.
+	// Double the service start timeout to make sure there is enough time for start logic.
+	timeout := util.Max(serviceStartTimeout, 2*s.so.config.Global.Membership.MaxJoinDuration)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	results := make(chan startServiceResult, len(s.servicesMetadata))
+	for _, svcMeta := range s.servicesMetadata {
+		go func(svcMeta *ServicesMetadata) {
+			err := svcMeta.app.Start(ctx)
+			results <- startServiceResult{
+				svc: svcMeta,
+				err: err,
+			}
+		}(svcMeta)
+	}
+	return s.readResults(results)
+}
+
+func (s *ServerImpl) readResults(results chan startServiceResult) (err error) {
+	for range s.servicesMetadata {
+		r := <-results
+		if r.err != nil {
+			err = multierr.Combine(err, fmt.Errorf("failed to start service %v: %w", r.svc.serviceName, r.err))
+		}
+	}
+	return
+}
+
+type startServiceResult struct {
+	svc *ServicesMetadata
+	err error
 }
 
 func initSystemNamespaces(
@@ -157,15 +172,17 @@ func initSystemNamespaces(
 	persistenceFactoryProvider persistenceClient.FactoryProviderFn,
 	logger log.Logger,
 	customDataStoreFactory persistenceClient.AbstractDataStoreFactory,
+	metricsHandler metrics.Handler,
 ) error {
 	clusterName := persistenceClient.ClusterName(currentClusterName)
+	metricsHandler = metricsHandler.WithTags(metrics.ServiceNameTag(primitives.ServerService))
 	dataStoreFactory, _ := persistenceClient.DataStoreFactoryProvider(
 		clusterName,
 		persistenceServiceResolver,
 		cfg,
 		customDataStoreFactory,
 		logger,
-		nil,
+		metricsHandler,
 	)
 	factory := persistenceFactoryProvider(persistenceClient.NewFactoryParams{
 		DataStoreFactory:           dataStoreFactory,
@@ -174,7 +191,7 @@ func initSystemNamespaces(
 		PersistenceNamespaceMaxQPS: nil,
 		EnablePriorityRateLimiting: nil,
 		ClusterName:                persistenceClient.ClusterName(currentClusterName),
-		MetricsHandler:             nil,
+		MetricsHandler:             metricsHandler,
 		Logger:                     logger,
 	})
 	defer factory.Close()
@@ -184,6 +201,7 @@ func initSystemNamespaces(
 		return fmt.Errorf("unable to initialize metadata manager: %w", err)
 	}
 	defer metadataManager.Close()
+	ctx = headers.SetCallerInfo(ctx, headers.SystemBackgroundCallerInfo)
 	if err = metadataManager.InitializeSystemNamespaces(ctx, currentClusterName); err != nil {
 		return fmt.Errorf("unable to register system namespace: %w", err)
 	}

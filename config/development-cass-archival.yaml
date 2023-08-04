@@ -68,7 +68,6 @@ clusterMetadata:
 
 dcRedirectionPolicy:
   policy: "noop"
-  toDC: ""
 
 archival:
   history:
@@ -96,9 +95,6 @@ namespaceDefaults:
     visibility:
       state: "enabled"
       URI: "file:///tmp/temporal_vis_archival/development"
-
-publicClient:
-  hostPort: "localhost:7233"
 
 dynamicConfigClient:
   filepath: "./config/dynamicconfig/development-cass.yaml"

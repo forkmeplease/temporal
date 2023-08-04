@@ -57,7 +57,6 @@ import (
 	"go.temporal.io/server/common/resourcetest"
 	"go.temporal.io/server/service/history/configs"
 	"go.temporal.io/server/service/history/shard"
-	"go.temporal.io/server/service/history/tasks"
 	"go.temporal.io/server/service/history/tests"
 )
 
@@ -111,18 +110,9 @@ func (s *taskProcessorSuite) SetupTest() {
 	s.shardID = rand.Int31()
 	s.mockShard = shard.NewTestContext(
 		s.controller,
-		&persistence.ShardInfoWithFailover{
-			ShardInfo: &persistencespb.ShardInfo{
-				ShardId: s.shardID,
-				RangeId: 1,
-				QueueAckLevels: map[int32]*persistencespb.QueueAckLevel{
-					tasks.CategoryReplication.ID(): {
-						ClusterAckLevel: map[string]int64{
-							cluster.TestAlternativeClusterName: persistence.EmptyQueueMessageID,
-						},
-					},
-				},
-			},
+		&persistencespb.ShardInfo{
+			ShardId: s.shardID,
+			RangeId: 1,
 		},
 		s.config,
 	)
@@ -148,6 +138,7 @@ func (s *taskProcessorSuite) SetupTest() {
 	metricsClient := metrics.NoopMetricsHandler
 
 	s.replicationTaskProcessor = NewTaskProcessor(
+		s.shardID,
 		s.mockShard,
 		s.mockEngine,
 		s.config,
@@ -204,7 +195,7 @@ func (s *taskProcessorSuite) TestHandleReplicationTask_SyncActivity() {
 		VisibilityTime: &now,
 	}
 
-	s.mockReplicationTaskExecutor.EXPECT().Execute(gomock.Any(), task, false).Return("", nil)
+	s.mockReplicationTaskExecutor.EXPECT().Execute(gomock.Any(), task, false).Return(nil)
 	err := s.replicationTaskProcessor.handleReplicationTask(context.Background(), task)
 	s.NoError(err)
 }
@@ -243,9 +234,21 @@ func (s *taskProcessorSuite) TestHandleReplicationTask_History() {
 		VisibilityTime: &now,
 	}
 
-	s.mockReplicationTaskExecutor.EXPECT().Execute(gomock.Any(), task, false).Return("", nil)
+	s.mockReplicationTaskExecutor.EXPECT().Execute(gomock.Any(), task, false).Return(nil)
 	err = s.replicationTaskProcessor.handleReplicationTask(context.Background(), task)
 	s.NoError(err)
+}
+
+func (s *taskProcessorSuite) TestHandleReplicationTask_Panic() {
+	task := &replicationspb.ReplicationTask{}
+
+	s.mockReplicationTaskExecutor.EXPECT().Execute(gomock.Any(), task, false).DoAndReturn(
+		func(_ context.Context, _ *replicationspb.ReplicationTask, _ bool) error {
+			panic("test replication task panic")
+		},
+	)
+	err := s.replicationTaskProcessor.handleReplicationTask(context.Background(), task)
+	s.Error(err)
 }
 
 func (s *taskProcessorSuite) TestHandleReplicationDLQTask_SyncActivity() {

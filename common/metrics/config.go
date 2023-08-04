@@ -29,7 +29,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cactus/go-statsd-client/statsd"
+	"github.com/cactus/go-statsd-client/v5/statsd"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/uber-go/tally/v4"
 	"github.com/uber-go/tally/v4/m3"
@@ -57,7 +57,7 @@ type (
 	ClientConfig struct {
 		// Tags is the set of key-value pairs to be reported as part of every metric
 		Tags map[string]string `yaml:"tags"`
-		// IgnoreTags is a map from tag name string to tag values string list.
+		// ExcludeTags is a map from tag name string to tag values string list.
 		// Each value present in keys will have relevant tag value replaced with "_tag_excluded_"
 		// Each value in values list will white-list tag values to be reported as usual.
 		ExcludeTags map[string][]string `yaml:"excludeTags"`
@@ -448,9 +448,9 @@ func newPrometheusScope(
 }
 
 // MetricsHandlerFromConfig is used at startup to construct a MetricsHandler
-func MetricsHandlerFromConfig(logger log.Logger, c *Config) Handler {
+func MetricsHandlerFromConfig(logger log.Logger, c *Config) (Handler, error) {
 	if c == nil {
-		return NoopMetricsHandler
+		return NoopMetricsHandler, nil
 	}
 
 	setDefaultPerUnitHistogramBoundaries(&c.ClientConfig)
@@ -467,7 +467,7 @@ func MetricsHandlerFromConfig(logger log.Logger, c *Config) Handler {
 	return NewTallyMetricsHandler(
 		c.ClientConfig,
 		NewScope(logger, c),
-	)
+	), nil
 }
 
 func configExcludeTags(cfg ClientConfig) map[string]map[string]struct{} {

@@ -100,6 +100,20 @@ func (mr *MockVisibilityStoreMockRecorder) DeleteWorkflowExecution(ctx, request 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteWorkflowExecution", reflect.TypeOf((*MockVisibilityStore)(nil).DeleteWorkflowExecution), ctx, request)
 }
 
+// GetIndexName mocks base method.
+func (m *MockVisibilityStore) GetIndexName() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetIndexName")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetIndexName indicates an expected call of GetIndexName.
+func (mr *MockVisibilityStoreMockRecorder) GetIndexName() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetIndexName", reflect.TypeOf((*MockVisibilityStore)(nil).GetIndexName))
+}
+
 // GetName mocks base method.
 func (m *MockVisibilityStore) GetName() string {
 	m.ctrl.T.Helper()
@@ -304,4 +318,19 @@ func (m *MockVisibilityStore) UpsertWorkflowExecution(ctx context.Context, reque
 func (mr *MockVisibilityStoreMockRecorder) UpsertWorkflowExecution(ctx, request interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertWorkflowExecution", reflect.TypeOf((*MockVisibilityStore)(nil).UpsertWorkflowExecution), ctx, request)
+}
+
+// ValidateCustomSearchAttributes mocks base method.
+func (m *MockVisibilityStore) ValidateCustomSearchAttributes(searchAttributes map[string]any) (map[string]any, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ValidateCustomSearchAttributes", searchAttributes)
+	ret0, _ := ret[0].(map[string]any)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ValidateCustomSearchAttributes indicates an expected call of ValidateCustomSearchAttributes.
+func (mr *MockVisibilityStoreMockRecorder) ValidateCustomSearchAttributes(searchAttributes interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidateCustomSearchAttributes", reflect.TypeOf((*MockVisibilityStore)(nil).ValidateCustomSearchAttributes), searchAttributes)
 }

@@ -28,12 +28,29 @@ package matching
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/server/api/matchingservice/v1"
 	"google.golang.org/grpc"
 )
+
+func (c *clientImpl) ApplyTaskQueueUserDataReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.ApplyTaskQueueUserDataReplicationEventResponse, error) {
+
+	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetTaskQueue()}, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return client.ApplyTaskQueueUserDataReplicationEvent(ctx, request, opts...)
+}
 
 func (c *clientImpl) CancelOutstandingPoll(
 	ctx context.Context,
@@ -65,41 +82,11 @@ func (c *clientImpl) DescribeTaskQueue(
 	return client.DescribeTaskQueue(ctx, request, opts...)
 }
 
-func (c *clientImpl) GetTaskQueueMetadata(
+func (c *clientImpl) ForceUnloadTaskQueue(
 	ctx context.Context,
-	request *matchingservice.GetTaskQueueMetadataRequest,
+	request *matchingservice.ForceUnloadTaskQueueRequest,
 	opts ...grpc.CallOption,
-) (*matchingservice.GetTaskQueueMetadataResponse, error) {
-
-	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetTaskQueue()}, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := c.createContext(ctx)
-	defer cancel()
-	return client.GetTaskQueueMetadata(ctx, request, opts...)
-}
-
-func (c *clientImpl) GetWorkerBuildIdOrdering(
-	ctx context.Context,
-	request *matchingservice.GetWorkerBuildIdOrderingRequest,
-	opts ...grpc.CallOption,
-) (*matchingservice.GetWorkerBuildIdOrderingResponse, error) {
-
-	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetRequest().GetTaskQueue()}, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := c.createContext(ctx)
-	defer cancel()
-	return client.GetWorkerBuildIdOrdering(ctx, request, opts...)
-}
-
-func (c *clientImpl) InvalidateTaskQueueMetadata(
-	ctx context.Context,
-	request *matchingservice.InvalidateTaskQueueMetadataRequest,
-	opts ...grpc.CallOption,
-) (*matchingservice.InvalidateTaskQueueMetadataResponse, error) {
+) (*matchingservice.ForceUnloadTaskQueueResponse, error) {
 
 	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetTaskQueue()}, request.GetTaskQueueType())
 	if err != nil {
@@ -107,7 +94,52 @@ func (c *clientImpl) InvalidateTaskQueueMetadata(
 	}
 	ctx, cancel := c.createContext(ctx)
 	defer cancel()
-	return client.InvalidateTaskQueueMetadata(ctx, request, opts...)
+	return client.ForceUnloadTaskQueue(ctx, request, opts...)
+}
+
+func (c *clientImpl) GetBuildIdTaskQueueMapping(
+	ctx context.Context,
+	request *matchingservice.GetBuildIdTaskQueueMappingRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.GetBuildIdTaskQueueMappingResponse, error) {
+
+	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: fmt.Sprintf("not-applicable-%d", rand.Int())}, enumspb.TASK_QUEUE_TYPE_UNSPECIFIED)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return client.GetBuildIdTaskQueueMapping(ctx, request, opts...)
+}
+
+func (c *clientImpl) GetTaskQueueUserData(
+	ctx context.Context,
+	request *matchingservice.GetTaskQueueUserDataRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.GetTaskQueueUserDataResponse, error) {
+
+	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetTaskQueue()}, request.GetTaskQueueType())
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.createLongPollContext(ctx)
+	defer cancel()
+	return client.GetTaskQueueUserData(ctx, request, opts...)
+}
+
+func (c *clientImpl) GetWorkerBuildIdCompatibility(
+	ctx context.Context,
+	request *matchingservice.GetWorkerBuildIdCompatibilityRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.GetWorkerBuildIdCompatibilityResponse, error) {
+
+	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetRequest().GetTaskQueue()}, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return client.GetWorkerBuildIdCompatibility(ctx, request, opts...)
 }
 
 func (c *clientImpl) ListTaskQueuePartitions(
@@ -125,6 +157,21 @@ func (c *clientImpl) ListTaskQueuePartitions(
 	return client.ListTaskQueuePartitions(ctx, request, opts...)
 }
 
+func (c *clientImpl) ReplicateTaskQueueUserData(
+	ctx context.Context,
+	request *matchingservice.ReplicateTaskQueueUserDataRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.ReplicateTaskQueueUserDataResponse, error) {
+
+	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: "not-applicable"}, enumspb.TASK_QUEUE_TYPE_UNSPECIFIED)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return client.ReplicateTaskQueueUserData(ctx, request, opts...)
+}
+
 func (c *clientImpl) RespondQueryTaskCompleted(
 	ctx context.Context,
 	request *matchingservice.RespondQueryTaskCompletedRequest,
@@ -140,17 +187,32 @@ func (c *clientImpl) RespondQueryTaskCompleted(
 	return client.RespondQueryTaskCompleted(ctx, request, opts...)
 }
 
-func (c *clientImpl) UpdateWorkerBuildIdOrdering(
+func (c *clientImpl) UpdateTaskQueueUserData(
 	ctx context.Context,
-	request *matchingservice.UpdateWorkerBuildIdOrderingRequest,
+	request *matchingservice.UpdateTaskQueueUserDataRequest,
 	opts ...grpc.CallOption,
-) (*matchingservice.UpdateWorkerBuildIdOrderingResponse, error) {
+) (*matchingservice.UpdateTaskQueueUserDataResponse, error) {
 
-	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetRequest().GetTaskQueue()}, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
+	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: "not-applicable"}, enumspb.TASK_QUEUE_TYPE_UNSPECIFIED)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := c.createContext(ctx)
 	defer cancel()
-	return client.UpdateWorkerBuildIdOrdering(ctx, request, opts...)
+	return client.UpdateTaskQueueUserData(ctx, request, opts...)
+}
+
+func (c *clientImpl) UpdateWorkerBuildIdCompatibility(
+	ctx context.Context,
+	request *matchingservice.UpdateWorkerBuildIdCompatibilityRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.UpdateWorkerBuildIdCompatibilityResponse, error) {
+
+	client, err := c.getClientForTaskqueue(request.GetNamespaceId(), &taskqueuepb.TaskQueue{Name: request.GetTaskQueue()}, enumspb.TASK_QUEUE_TYPE_WORKFLOW)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return client.UpdateWorkerBuildIdCompatibility(ctx, request, opts...)
 }

@@ -51,6 +51,7 @@ func Invoke(
 		nil,
 		api.BypassMutableStateConsistencyPredicate,
 		workflowKey,
+		workflow.LockPriorityLow,
 	)
 	if err != nil {
 		return err
@@ -62,7 +63,6 @@ func Invoke(
 		shard,
 		shard.GetConfig(),
 		shard.GetNamespaceRegistry(),
-		shard.GetEventsCache(),
 		shard.GetLogger(),
 	)
 

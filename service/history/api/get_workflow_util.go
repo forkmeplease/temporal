@@ -128,6 +128,9 @@ func GetOrPollMutableState(
 				response.PreviousStartedEventId = event.PreviousStartedEventID
 				response.WorkflowState = event.WorkflowState
 				response.WorkflowStatus = event.WorkflowStatus
+				// Note: Later events could modify response.WorkerVersionStamp and we won't
+				// update it here. That's okay since this return value is only informative and isn't used for task dispatch.
+				// For correctness we could pass it in the Notification event.
 				if !bytes.Equal(request.CurrentBranchToken, event.CurrentBranchToken) {
 					return nil, serviceerrors.NewCurrentBranchChanged(event.CurrentBranchToken, request.CurrentBranchToken)
 				}
@@ -162,6 +165,7 @@ func GetMutableState(
 		nil,
 		BypassMutableStateConsistencyPredicate,
 		workflowKey,
+		workflow.LockPriorityHigh,
 	)
 	if err != nil {
 		return nil, err
@@ -195,23 +199,25 @@ func MutableStateToGetResponse(
 		LastFirstEventId:       lastFirstEventID,
 		LastFirstEventTxnId:    lastFirstEventTxnID,
 		NextEventId:            mutableState.GetNextEventID(),
-		PreviousStartedEventId: mutableState.GetPreviousStartedEventID(),
+		PreviousStartedEventId: mutableState.GetLastWorkflowTaskStartedEventID(),
 		TaskQueue: &taskqueuepb.TaskQueue{
 			Name: executionInfo.TaskQueue,
 			Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
 		},
 		StickyTaskQueue: &taskqueuepb.TaskQueue{
-			Name: executionInfo.StickyTaskQueue,
-			Kind: enumspb.TASK_QUEUE_KIND_STICKY,
+			Name:       executionInfo.StickyTaskQueue,
+			Kind:       enumspb.TASK_QUEUE_KIND_STICKY,
+			NormalName: executionInfo.TaskQueue,
 		},
 		StickyTaskQueueScheduleToStartTimeout: executionInfo.StickyScheduleToStartTimeout,
 		CurrentBranchToken:                    currentBranchToken,
 		WorkflowState:                         workflowState,
 		WorkflowStatus:                        workflowStatus,
-		IsStickyTaskQueueEnabled:              mutableState.IsStickyTaskQueueEnabled(),
+		IsStickyTaskQueueEnabled:              mutableState.IsStickyTaskQueueSet(),
 		VersionHistories: versionhistory.CopyVersionHistories(
 			mutableState.GetExecutionInfo().GetVersionHistories(),
 		),
 		FirstExecutionRunId: executionInfo.FirstExecutionRunId,
+		WorkerVersionStamp:  executionInfo.WorkerVersionStamp,
 	}, nil
 }

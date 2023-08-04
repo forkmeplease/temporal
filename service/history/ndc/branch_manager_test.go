@@ -35,6 +35,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 
+	enumsspb "go.temporal.io/server/api/enums/v1"
 	historyspb "go.temporal.io/server/api/history/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/cluster"
@@ -86,11 +87,10 @@ func (s *branchMgrSuite) SetupTest() {
 
 	s.mockShard = shard.NewTestContext(
 		s.controller,
-		&persistence.ShardInfoWithFailover{
-			ShardInfo: &persistencespb.ShardInfo{
-				ShardId: 10,
-				RangeId: 1,
-			}},
+		&persistencespb.ShardInfo{
+			ShardId: 10,
+			RangeId: 1,
+		},
 		tests.NewDynamicConfig(),
 	)
 
@@ -152,6 +152,7 @@ func (s *branchMgrSuite) TestCreateNewBranch() {
 				ForkNodeID:      baseBranchLCAEventID + 1,
 				Info:            "",
 				ShardID:         shardID,
+				NamespaceID:     s.namespaceID,
 			}, input)
 			return &persistence.ForkHistoryBranchResponse{
 				NewBranchToken: newBranchToken,
@@ -193,7 +194,8 @@ func (s *branchMgrSuite) TestClearTransientWorkflowTask() {
 
 	s.mockMutableState.EXPECT().GetLastWriteVersion().Return(lastWriteVersion, nil).AnyTimes()
 	s.mockMutableState.EXPECT().HasBufferedEvents().Return(false).AnyTimes()
-	s.mockMutableState.EXPECT().HasTransientWorkflowTask().Return(true).AnyTimes()
+	s.mockMutableState.EXPECT().HasStartedWorkflowTask().Return(true).AnyTimes()
+	s.mockMutableState.EXPECT().IsTransientWorkflowTask().Return(true).AnyTimes()
 	s.mockMutableState.EXPECT().ClearTransientWorkflowTask().Return(nil).AnyTimes()
 
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(&persistencespb.WorkflowExecutionInfo{
@@ -239,13 +241,12 @@ func (s *branchMgrSuite) TestFlushBufferedEvents() {
 		ScheduledEventID: 1234,
 		StartedEventID:   2345,
 	}
-	s.mockMutableState.EXPECT().GetInFlightWorkflowTask().Return(workflowTask, true)
+	s.mockMutableState.EXPECT().GetStartedWorkflowTask().Return(workflowTask)
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(&persistencespb.WorkflowExecutionInfo{
 		VersionHistories: versionHistories,
 	}).AnyTimes()
 	s.mockMutableState.EXPECT().AddWorkflowTaskFailedEvent(
-		workflowTask.ScheduledEventID,
-		workflowTask.StartedEventID,
+		workflowTask,
 		enumspb.WORKFLOW_TASK_FAILED_CAUSE_FAILOVER_CLOSE_COMMAND,
 		nil,
 		consts.IdentityHistoryService,
@@ -254,11 +255,15 @@ func (s *branchMgrSuite) TestFlushBufferedEvents() {
 		"",
 		int64(0),
 	).Return(&historypb.HistoryEvent{}, nil)
+	s.mockMutableState.EXPECT().AddWorkflowTaskScheduledEvent(
+		false,
+		enumsspb.WORKFLOW_TASK_TYPE_NORMAL,
+	).Return(&workflow.WorkflowTaskInfo{}, nil)
 	s.mockMutableState.EXPECT().FlushBufferedEvents()
 	s.mockClusterMetadata.EXPECT().ClusterNameForFailoverVersion(true, lastWriteVersion).Return(cluster.TestCurrentClusterName).AnyTimes()
 	s.mockClusterMetadata.EXPECT().GetCurrentClusterName().Return(cluster.TestCurrentClusterName).AnyTimes()
 
-	s.mockContext.EXPECT().UpdateWorkflowExecutionAsActive(gomock.Any(), gomock.Any()).Return(nil)
+	s.mockContext.EXPECT().UpdateWorkflowExecutionAsActive(gomock.Any()).Return(nil)
 
 	ctx := context.Background()
 
@@ -285,7 +290,8 @@ func (s *branchMgrSuite) TestPrepareVersionHistory_BranchAppendable_NoMissingEve
 
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(&persistencespb.WorkflowExecutionInfo{VersionHistories: versionHistories}).AnyTimes()
 	s.mockMutableState.EXPECT().HasBufferedEvents().Return(false).AnyTimes()
-	s.mockMutableState.EXPECT().HasTransientWorkflowTask().Return(false).AnyTimes()
+	s.mockMutableState.EXPECT().HasStartedWorkflowTask().Return(true).AnyTimes()
+	s.mockMutableState.EXPECT().IsTransientWorkflowTask().Return(false).AnyTimes()
 
 	doContinue, index, err := s.nDCBranchMgr.prepareVersionHistory(
 		context.Background(),
@@ -316,7 +322,8 @@ func (s *branchMgrSuite) TestPrepareVersionHistory_BranchAppendable_MissingEvent
 	s.NoError(err)
 
 	s.mockMutableState.EXPECT().HasBufferedEvents().Return(false).AnyTimes()
-	s.mockMutableState.EXPECT().HasTransientWorkflowTask().Return(false).AnyTimes()
+	s.mockMutableState.EXPECT().HasStartedWorkflowTask().Return(true).AnyTimes()
+	s.mockMutableState.EXPECT().IsTransientWorkflowTask().Return(false).AnyTimes()
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(&persistencespb.WorkflowExecutionInfo{
 		NamespaceId:      s.namespaceID,
 		WorkflowId:       s.workflowID,
@@ -357,7 +364,8 @@ func (s *branchMgrSuite) TestPrepareVersionHistory_BranchNotAppendable_NoMissing
 	newBranchToken := []byte("some random new branch token")
 
 	s.mockMutableState.EXPECT().HasBufferedEvents().Return(false).AnyTimes()
-	s.mockMutableState.EXPECT().HasTransientWorkflowTask().Return(false).AnyTimes()
+	s.mockMutableState.EXPECT().HasStartedWorkflowTask().Return(true).AnyTimes()
+	s.mockMutableState.EXPECT().IsTransientWorkflowTask().Return(false).AnyTimes()
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(&persistencespb.WorkflowExecutionInfo{
 		NamespaceId:      s.namespaceID,
 		WorkflowId:       s.workflowID,
@@ -376,6 +384,7 @@ func (s *branchMgrSuite) TestPrepareVersionHistory_BranchNotAppendable_NoMissing
 				ForkNodeID:      baseBranchLCAEventID + 1,
 				Info:            "",
 				ShardID:         shardID,
+				NamespaceID:     s.namespaceID,
 			}, input)
 			return &persistence.ForkHistoryBranchResponse{
 				NewBranchToken: newBranchToken,
@@ -416,7 +425,8 @@ func (s *branchMgrSuite) TestPrepareVersionHistory_BranchNotAppendable_MissingEv
 	})
 
 	s.mockMutableState.EXPECT().HasBufferedEvents().Return(false).AnyTimes()
-	s.mockMutableState.EXPECT().HasTransientWorkflowTask().Return(false).AnyTimes()
+	s.mockMutableState.EXPECT().HasStartedWorkflowTask().Return(true).AnyTimes()
+	s.mockMutableState.EXPECT().IsTransientWorkflowTask().Return(false).AnyTimes()
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(&persistencespb.WorkflowExecutionInfo{
 		NamespaceId:      s.namespaceID,
 		WorkflowId:       s.workflowID,

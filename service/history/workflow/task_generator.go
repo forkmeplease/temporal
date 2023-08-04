@@ -35,6 +35,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 
 	enumsspb "go.temporal.io/server/api/enums/v1"
+	"go.temporal.io/server/common/archiver"
 	"go.temporal.io/server/common/backoff"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/persistence/versionhistory"
@@ -70,6 +71,7 @@ type (
 		) error
 		GenerateScheduleWorkflowTaskTasks(
 			workflowTaskScheduledEventID int64,
+			generateTimeoutTaskOnly bool,
 		) error
 		GenerateStartWorkflowTaskTasks(
 			workflowTaskScheduledEventID int64,
@@ -98,16 +100,16 @@ type (
 
 		// replication tasks
 		GenerateHistoryReplicationTasks(
-			branchToken []byte,
 			events []*historypb.HistoryEvent,
 		) error
-		GenerateMigrationTasks() (tasks.Task, error)
+		GenerateMigrationTasks() (tasks.Task, int64, error)
 	}
 
 	TaskGeneratorImpl struct {
 		namespaceRegistry namespace.Registry
 		mutableState      MutableState
 		config            *configs.Config
+		archivalMetadata  archiver.ArchivalMetadata
 	}
 )
 
@@ -119,11 +121,13 @@ func NewTaskGenerator(
 	namespaceRegistry namespace.Registry,
 	mutableState MutableState,
 	config *configs.Config,
+	archivalMetadata archiver.ArchivalMetadata,
 ) *TaskGeneratorImpl {
 	return &TaskGeneratorImpl{
 		namespaceRegistry: namespaceRegistry,
 		mutableState:      mutableState,
 		config:            config,
+		archivalMetadata:  archivalMetadata,
 	}
 }
 
@@ -138,19 +142,16 @@ func (r *TaskGeneratorImpl) GenerateWorkflowStartTasks(
 		return nil
 	}
 
-	r.mutableState.AddTasks(&tasks.WorkflowTimeoutTask{
-		// TaskID is set by shard
-		WorkflowKey:         r.mutableState.GetWorkflowKey(),
-		VisibilityTimestamp: workflowRunExpirationTime,
-		Version:             startVersion,
-	})
-
+	if r.mutableState.IsWorkflowExecutionRunning() {
+		r.mutableState.AddTasks(&tasks.WorkflowTimeoutTask{
+			// TaskID is set by shard
+			WorkflowKey:         r.mutableState.GetWorkflowKey(),
+			VisibilityTimestamp: workflowRunExpirationTime,
+			Version:             startVersion,
+		})
+	}
 	return nil
 }
-
-// archivalDelayJitterCoefficient is a variable because we need to override it to 0 in unit tests to make them
-// deterministic.
-var archivalDelayJitterCoefficient = 1.0
 
 func (r *TaskGeneratorImpl) GenerateWorkflowCloseTasks(
 	closeEvent *historypb.HistoryEvent,
@@ -159,13 +160,14 @@ func (r *TaskGeneratorImpl) GenerateWorkflowCloseTasks(
 
 	currentVersion := r.mutableState.GetCurrentVersion()
 
+	closeExecutionTask := &tasks.CloseExecutionTask{
+		// TaskID, Visiblitytimestamp is set by shard
+		WorkflowKey:      r.mutableState.GetWorkflowKey(),
+		Version:          currentVersion,
+		DeleteAfterClose: deleteAfterClose,
+	}
 	closeTasks := []tasks.Task{
-		&tasks.CloseExecutionTask{
-			// TaskID, Visiblitytimestamp is set by shard
-			WorkflowKey:      r.mutableState.GetWorkflowKey(),
-			Version:          currentVersion,
-			DeleteAfterClose: deleteAfterClose,
-		},
+		closeExecutionTask,
 	}
 
 	// To avoid race condition between visibility close and delete tasks, visibility close task is not created here.
@@ -191,20 +193,24 @@ func (r *TaskGeneratorImpl) GenerateWorkflowCloseTasks(
 				Version:     currentVersion,
 			},
 		)
-		if r.config.DurableArchivalEnabled() {
+		if r.archivalQueueEnabled() {
 			retention, err := r.getRetention()
 			if err != nil {
 				return err
 			}
 			// We schedule the archival task for a random time in the near future to avoid sending a surge of tasks
 			// to the archival system at the same time
-			delay := backoff.JitDuration(r.config.ArchivalProcessorArchiveDelay(), archivalDelayJitterCoefficient) / 2
+
+			delay := backoff.FullJitter(r.config.ArchivalProcessorArchiveDelay())
 			if delay > retention {
 				delay = retention
 			}
 			// archiveTime is the time when the archival queue recognizes the ArchiveExecutionTask as ready-to-process
 			archiveTime := closeEvent.GetEventTime().Add(delay)
 
+			// This flag is only untrue for old server versions which were using the archival workflow instead of the
+			// archival queue.
+			closeExecutionTask.CanSkipVisibilityArchival = true
 			task := &tasks.ArchiveExecutionTask{
 				// TaskID is set by the shard
 				WorkflowKey:         r.mutableState.GetWorkflowKey(),
@@ -258,7 +264,7 @@ func (r *TaskGeneratorImpl) GenerateDeleteHistoryEventTask(closeTime time.Time, 
 		return err
 	}
 
-	retentionJitterDuration := backoff.JitDuration(r.config.RetentionTimerJitterDuration(), 1) / 2
+	retentionJitterDuration := backoff.FullJitter(r.config.RetentionTimerJitterDuration())
 	deleteTime := closeTime.Add(retention).Add(retentionJitterDuration)
 	r.mutableState.AddTasks(&tasks.DeleteHistoryEventTask{
 		// TaskID is set by shard
@@ -297,7 +303,7 @@ func (r *TaskGeneratorImpl) GenerateDelayedWorkflowTasks(
 	case enumspb.CONTINUE_AS_NEW_INITIATOR_CRON_SCHEDULE, enumspb.CONTINUE_AS_NEW_INITIATOR_WORKFLOW:
 		workflowBackoffType = enumsspb.WORKFLOW_BACKOFF_TYPE_CRON
 	default:
-		return serviceerror.NewInternal(fmt.Sprintf("unknown initiator: %v", startAttr.GetInitiator()))
+		workflowBackoffType = enumsspb.WORKFLOW_BACKOFF_TYPE_DELAY_START
 	}
 
 	r.mutableState.AddTasks(&tasks.WorkflowBackoffTimerTask{
@@ -327,28 +333,21 @@ func (r *TaskGeneratorImpl) GenerateRecordWorkflowStartedTasks(
 
 func (r *TaskGeneratorImpl) GenerateScheduleWorkflowTaskTasks(
 	workflowTaskScheduledEventID int64,
+	generateTimeoutTaskOnly bool, // For non-speculative WT, generate only SCHEDULE_TO_START timeout timer task, but not a transfer task which push WT to matching.
 ) error {
 
-	workflowTask, ok := r.mutableState.GetWorkflowTaskInfo(
+	workflowTask := r.mutableState.GetWorkflowTaskByID(
 		workflowTaskScheduledEventID,
 	)
-	if !ok {
+	if workflowTask == nil {
 		return serviceerror.NewInternal(fmt.Sprintf("it could be a bug, cannot get pending workflow task: %v", workflowTaskScheduledEventID))
 	}
 
-	r.mutableState.AddTasks(&tasks.WorkflowTask{
-		// TaskID, VisibilityTimestamp is set by shard
-		WorkflowKey:      r.mutableState.GetWorkflowKey(),
-		TaskQueue:        workflowTask.TaskQueue.GetName(),
-		ScheduledEventID: workflowTask.ScheduledEventID,
-		Version:          workflowTask.Version,
-	})
-
-	if r.mutableState.IsStickyTaskQueueEnabled() {
+	if r.mutableState.IsStickyTaskQueueSet() {
 		scheduledTime := timestamp.TimeValue(workflowTask.ScheduledTime)
 		scheduleToStartTimeout := timestamp.DurationValue(r.mutableState.GetExecutionInfo().StickyScheduleToStartTimeout)
 
-		r.mutableState.AddTasks(&tasks.WorkflowTaskTimeoutTask{
+		wttt := &tasks.WorkflowTaskTimeoutTask{
 			// TaskID is set by shard
 			WorkflowKey:         r.mutableState.GetWorkflowKey(),
 			VisibilityTimestamp: scheduledTime.Add(scheduleToStartTimeout),
@@ -356,8 +355,31 @@ func (r *TaskGeneratorImpl) GenerateScheduleWorkflowTaskTasks(
 			EventID:             workflowTask.ScheduledEventID,
 			ScheduleAttempt:     workflowTask.Attempt,
 			Version:             workflowTask.Version,
-		})
+		}
+
+		if workflowTask.Type == enumsspb.WORKFLOW_TASK_TYPE_SPECULATIVE {
+			return r.mutableState.SetSpeculativeWorkflowTaskTimeoutTask(wttt)
+		}
+
+		r.mutableState.AddTasks(wttt)
 	}
+
+	if generateTimeoutTaskOnly {
+		return nil
+	}
+
+	r.mutableState.AddTasks(&tasks.WorkflowTask{
+		// TaskID, VisibilityTimestamp is set by shard
+		WorkflowKey: r.mutableState.GetWorkflowKey(),
+		// Store current task queue to the transfer task.
+		// If current task queue becomes sticky in between when this transfer task is created and processed,
+		// it can't be used at process time, because timeout timer was not created for it,
+		// because it used to be non-sticky when this transfer task was created here.
+		// In short, task queue that was "current" when transfer task was created must be used when task is processed.
+		TaskQueue:        workflowTask.TaskQueue.GetName(),
+		ScheduledEventID: workflowTask.ScheduledEventID,
+		Version:          workflowTask.Version,
+	})
 
 	return nil
 }
@@ -366,17 +388,17 @@ func (r *TaskGeneratorImpl) GenerateStartWorkflowTaskTasks(
 	workflowTaskScheduledEventID int64,
 ) error {
 
-	workflowTask, ok := r.mutableState.GetWorkflowTaskInfo(
+	workflowTask := r.mutableState.GetWorkflowTaskByID(
 		workflowTaskScheduledEventID,
 	)
-	if !ok {
-		return serviceerror.NewInternal(fmt.Sprintf("it could be a bug, cannot get pending workflowTaskInfo: %v", workflowTaskScheduledEventID))
+	if workflowTask == nil {
+		return serviceerror.NewInternal(fmt.Sprintf("it could be a bug, cannot get pending workflow task: %v", workflowTaskScheduledEventID))
 	}
 
 	startedTime := timestamp.TimeValue(workflowTask.StartedTime)
 	workflowTaskTimeout := timestamp.DurationValue(workflowTask.WorkflowTaskTimeout)
 
-	r.mutableState.AddTasks(&tasks.WorkflowTaskTimeoutTask{
+	wttt := &tasks.WorkflowTaskTimeoutTask{
 		// TaskID is set by shard
 		WorkflowKey:         r.mutableState.GetWorkflowKey(),
 		VisibilityTimestamp: startedTime.Add(workflowTaskTimeout),
@@ -384,7 +406,12 @@ func (r *TaskGeneratorImpl) GenerateStartWorkflowTaskTasks(
 		EventID:             workflowTask.ScheduledEventID,
 		ScheduleAttempt:     workflowTask.Attempt,
 		Version:             workflowTask.Version,
-	})
+	}
+	if workflowTask.Type == enumsspb.WORKFLOW_TASK_TYPE_SPECULATIVE {
+		return r.mutableState.SetSpeculativeWorkflowTaskTimeoutTask(wttt)
+	}
+
+	r.mutableState.AddTasks(wttt)
 
 	return nil
 }
@@ -564,9 +591,12 @@ func (r *TaskGeneratorImpl) GenerateUserTimerTasks() error {
 }
 
 func (r *TaskGeneratorImpl) GenerateHistoryReplicationTasks(
-	branchToken []byte,
 	events []*historypb.HistoryEvent,
 ) error {
+	if len(events) == 0 {
+		return nil
+	}
+
 	firstEvent := events[0]
 	lastEvent := events[len(events)-1]
 	if firstEvent.GetVersion() != lastEvent.GetVersion() {
@@ -584,15 +614,15 @@ func (r *TaskGeneratorImpl) GenerateHistoryReplicationTasks(
 	return nil
 }
 
-func (r *TaskGeneratorImpl) GenerateMigrationTasks() (tasks.Task, error) {
+func (r *TaskGeneratorImpl) GenerateMigrationTasks() (tasks.Task, int64, error) {
 	executionInfo := r.mutableState.GetExecutionInfo()
 	versionHistory, err := versionhistory.GetCurrentVersionHistory(executionInfo.GetVersionHistories())
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	lastItem, err := versionhistory.GetLastVersionHistoryItem(versionHistory)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	if r.mutableState.GetExecutionState().State == enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED {
@@ -600,7 +630,7 @@ func (r *TaskGeneratorImpl) GenerateMigrationTasks() (tasks.Task, error) {
 			// TaskID, VisibilityTimestamp is set by shard
 			WorkflowKey: r.mutableState.GetWorkflowKey(),
 			Version:     lastItem.GetVersion(),
-		}, nil
+		}, 1, nil
 	} else {
 		return &tasks.HistoryReplicationTask{
 			// TaskID, VisibilityTimestamp is set by shard
@@ -608,7 +638,7 @@ func (r *TaskGeneratorImpl) GenerateMigrationTasks() (tasks.Task, error) {
 			FirstEventID: executionInfo.LastFirstEventId,
 			NextEventID:  lastItem.GetEventId() + 1,
 			Version:      lastItem.GetVersion(),
-		}, nil
+		}, executionInfo.StateTransitionCount, nil
 	}
 }
 
@@ -634,4 +664,15 @@ func (r *TaskGeneratorImpl) getTargetNamespaceID(
 	}
 
 	return namespace.ID(r.mutableState.GetExecutionInfo().NamespaceId), nil
+}
+
+// archivalQueueEnabled returns true if archival is enabled for either history or visibility, and the archival queue
+// itself is also enabled.
+// For both history and visibility, we check that archival is enabled for both the cluster and the namespace.
+func (r *TaskGeneratorImpl) archivalQueueEnabled() bool {
+	namespaceEntry := r.mutableState.GetNamespaceEntry()
+	return r.archivalMetadata.GetHistoryConfig().ClusterConfiguredForArchival() &&
+		namespaceEntry.HistoryArchivalState().State == enumspb.ARCHIVAL_STATE_ENABLED ||
+		r.archivalMetadata.GetVisibilityConfig().ClusterConfiguredForArchival() &&
+			namespaceEntry.VisibilityArchivalState().State == enumspb.ARCHIVAL_STATE_ENABLED
 }

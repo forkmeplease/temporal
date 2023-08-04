@@ -35,7 +35,7 @@ var _ Task = (*ArchiveExecutionTask)(nil)
 
 type (
 	// ArchiveExecutionTask is the task which archives both the history and visibility of a workflow execution and then
-	// produces a retention timer task to delete the data. See "Durable Archival" for more info.
+	// produces a retention timer task to delete the data.
 	ArchiveExecutionTask struct {
 		definition.WorkflowKey
 		VisibilityTimestamp time.Time
@@ -45,7 +45,7 @@ type (
 )
 
 func (a *ArchiveExecutionTask) GetKey() Key {
-	return NewImmediateKey(a.TaskID)
+	return NewKey(a.VisibilityTimestamp, a.TaskID)
 }
 
 func (a *ArchiveExecutionTask) GetTaskID() int64 {

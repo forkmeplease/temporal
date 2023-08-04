@@ -94,11 +94,10 @@ func (s *stateRebuilderSuite) SetupTest() {
 
 	s.mockShard = shard.NewTestContext(
 		s.controller,
-		&persistence.ShardInfoWithFailover{
-			ShardInfo: &persistencespb.ShardInfo{
-				ShardId: 10,
-				RangeId: 1,
-			}},
+		&persistencespb.ShardInfo{
+			ShardId: 10,
+			RangeId: 1,
+		},
 		tests.NewDynamicConfig(),
 	)
 
@@ -152,18 +151,18 @@ func (s *stateRebuilderSuite) TestApplyEvents() {
 
 	mockStateBuilder := workflow.NewMockMutableStateRebuilder(s.controller)
 	mockStateBuilder.EXPECT().ApplyEvents(
-		context.Background(),
+		gomock.Any(),
 		s.namespaceID,
 		requestID,
 		commonpb.WorkflowExecution{
 			WorkflowId: s.workflowID,
 			RunId:      s.runID,
 		},
-		events,
+		[][]*historypb.HistoryEvent{events},
 		[]*historypb.HistoryEvent(nil),
 	).Return(nil, nil)
 
-	err := s.nDCStateRebuilder.applyEvents(workflowKey, mockStateBuilder, events, requestID)
+	err := s.nDCStateRebuilder.applyEvents(context.Background(), workflowKey, mockStateBuilder, events, requestID)
 	s.NoError(err)
 }
 

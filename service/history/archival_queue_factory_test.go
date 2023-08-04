@@ -30,11 +30,11 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/server/common/clock"
 
-	"go.temporal.io/server/api/persistence/v1"
+	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
-	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/primitives/timestamp"
 	"go.temporal.io/server/service/history/shard"
 	"go.temporal.io/server/service/history/tasks"
@@ -43,32 +43,42 @@ import (
 
 func TestArchivalQueueFactory(t *testing.T) {
 	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
 	metricsHandler := metrics.NewMockHandler(ctrl)
 	metricsHandler.EXPECT().WithTags(gomock.Any()).Do(func(tags ...metrics.Tag) metrics.Handler {
 		require.Len(t, tags, 1)
 		assert.Equal(t, metrics.OperationTagName, tags[0].Key())
 		assert.Equal(t, "ArchivalQueueProcessor", tags[0].Value())
 		return metricsHandler
-	})
-	shardContext := shard.NewMockContext(ctrl)
-	shardContext.EXPECT().GetLogger().Return(log.NewNoopLogger())
-	shardContext.EXPECT().GetQueueState(tasks.CategoryArchival).Return(&persistence.QueueState{
-		ReaderStates: nil,
-		ExclusiveReaderHighWatermark: &persistence.TaskKey{
-			FireTime: timestamp.TimeNowPtrUtc(),
+	}).Times(2)
+
+	mockShard := shard.NewTestContext(
+		ctrl,
+		&persistencespb.ShardInfo{
+			ShardId: 0,
+			RangeId: 1,
+			QueueStates: map[int32]*persistencespb.QueueState{
+				tasks.CategoryIDArchival: {
+					ReaderStates: nil,
+					ExclusiveReaderHighWatermark: &persistencespb.TaskKey{
+						FireTime: timestamp.TimeNowPtrUtc(),
+					},
+				},
+			},
 		},
-	}, true)
-	shardContext.EXPECT().GetTimeSource().Return(namespace.NewMockClock(ctrl)).AnyTimes()
+		tests.NewDynamicConfig(),
+	)
 
 	queueFactory := NewArchivalQueueFactory(ArchivalQueueFactoryParams{
 		QueueFactoryBaseParams: QueueFactoryBaseParams{
 			Config:         tests.NewDynamicConfig(),
-			TimeSource:     namespace.NewMockClock(ctrl),
+			TimeSource:     clock.NewEventTimeSource(),
 			MetricsHandler: metricsHandler,
 			Logger:         log.NewNoopLogger(),
 		},
 	})
-	queue := queueFactory.CreateQueue(shardContext, nil)
+	queue := queueFactory.CreateQueue(mockShard, nil)
 
 	require.NotNil(t, queue)
 	assert.Equal(t, tasks.CategoryArchival, queue.Category())

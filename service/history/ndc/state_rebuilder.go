@@ -99,7 +99,6 @@ func NewStateRebuilder(
 			shard,
 			shard.GetConfig(),
 			shard.GetNamespaceRegistry(),
-			shard.GetEventsCache(),
 			logger,
 		),
 		rebuiltHistorySize: 0,
@@ -149,6 +148,7 @@ func (r *StateRebuilderImpl) Rebuild(
 		}
 
 		if err := r.applyEvents(
+			ctx,
 			targetWorkflowIdentifier,
 			stateBuilder,
 			history.History.Events,
@@ -186,7 +186,7 @@ func (r *StateRebuilderImpl) Rebuild(
 	}
 
 	// close rebuilt mutable state transaction clearing all generated tasks, etc.
-	_, _, err = rebuiltMutableState.CloseTransactionAsSnapshot(now, workflow.TransactionPolicyPassive)
+	_, _, err = rebuiltMutableState.CloseTransactionAsSnapshot(workflow.TransactionPolicyPassive)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -221,6 +221,7 @@ func (r *StateRebuilderImpl) initializeBuilders(
 }
 
 func (r *StateRebuilderImpl) applyEvents(
+	ctx context.Context,
 	workflowKey definition.WorkflowKey,
 	stateBuilder workflow.MutableStateRebuilder,
 	events []*historypb.HistoryEvent,
@@ -228,14 +229,14 @@ func (r *StateRebuilderImpl) applyEvents(
 ) error {
 
 	_, err := stateBuilder.ApplyEvents(
-		context.Background(),
+		ctx,
 		namespace.ID(workflowKey.NamespaceID),
 		requestID,
 		commonpb.WorkflowExecution{
 			WorkflowId: workflowKey.WorkflowID,
 			RunId:      workflowKey.RunID,
 		},
-		events,
+		[][]*historypb.HistoryEvent{events},
 		nil, // no new run history when rebuilding mutable state
 	)
 	if err != nil {

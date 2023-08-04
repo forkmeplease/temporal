@@ -27,8 +27,11 @@ package batcher
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"github.com/pborman/uuid"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
@@ -91,15 +94,19 @@ func (a *activities) BatchActivity(ctx context.Context, batchParams BatchParams)
 	}
 
 	if startOver {
-		resp, err := sdkClient.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
-			Query: batchParams.Query,
-		})
-		if err != nil {
-			metricsHandler.Counter(metrics.BatcherOperationFailures.GetMetricName()).Record(1)
-			logger.Error("Failed to get estimate workflow count", tag.Error(err))
-			return HeartBeatDetails{}, err
+		estimateCount := int64(len(batchParams.Executions))
+		if len(batchParams.Query) > 0 {
+			resp, err := sdkClient.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
+				Query: batchParams.Query,
+			})
+			if err != nil {
+				metricsHandler.Counter(metrics.BatcherOperationFailures.GetMetricName()).Record(1)
+				logger.Error("Failed to get estimate workflow count", tag.Error(err))
+				return HeartBeatDetails{}, err
+			}
+			estimateCount = resp.GetCount()
 		}
-		hbd.TotalEstimate = resp.GetCount()
+		hbd.TotalEstimate = estimateCount
 	}
 	rps := a.getOperationRPS(batchParams.RPS)
 	rateLimiter := rate.NewLimiter(rate.Limit(rps), rps)
@@ -110,25 +117,33 @@ func (a *activities) BatchActivity(ctx context.Context, batchParams BatchParams)
 	}
 
 	for {
-		resp, err := sdkClient.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-			PageSize:      int32(pageSize),
-			NextPageToken: hbd.PageToken,
-			Query:         batchParams.Query,
-		})
-		if err != nil {
-			metricsHandler.Counter(metrics.BatcherOperationFailures.GetMetricName()).Record(1)
-			logger.Error("Failed to list workflow executions", tag.Error(err))
-			return HeartBeatDetails{}, err
+		executions := batchParams.Executions
+		pageToken := hbd.PageToken
+		if len(batchParams.Query) > 0 {
+			resp, err := sdkClient.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+				PageSize:      int32(pageSize),
+				NextPageToken: pageToken,
+				Query:         batchParams.Query,
+			})
+			if err != nil {
+				metricsHandler.Counter(metrics.BatcherOperationFailures.GetMetricName()).Record(1)
+				logger.Error("Failed to list workflow executions", tag.Error(err))
+				return HeartBeatDetails{}, err
+			}
+			pageToken = resp.NextPageToken
+			for _, wf := range resp.Executions {
+				executions = append(executions, wf.Execution)
+			}
 		}
-		batchCount := len(resp.Executions)
+
+		batchCount := len(executions)
 		if batchCount <= 0 {
 			break
 		}
-
 		// send all tasks
-		for _, wf := range resp.Executions {
+		for _, wf := range executions {
 			taskCh <- taskDetail{
-				execution: *wf.Execution,
+				execution: *wf,
 				attempts:  1,
 				hbd:       hbd,
 			}
@@ -157,7 +172,7 @@ func (a *activities) BatchActivity(ctx context.Context, batchParams BatchParams)
 		}
 
 		hbd.CurrentPage++
-		hbd.PageToken = resp.NextPageToken
+		hbd.PageToken = pageToken
 		hbd.SuccessCount += succCount
 		hbd.ErrorCount += errCount
 		activity.RecordHeartbeat(ctx, hbd)
@@ -229,7 +244,16 @@ func startTaskProcessor(
 			case BatchTypeSignal:
 				err = processTask(ctx, limiter, task,
 					func(workflowID, runID string) error {
-						return sdkClient.SignalWorkflow(ctx, workflowID, runID, batchParams.SignalParams.SignalName, batchParams.SignalParams.Input)
+						_, err := frontendClient.SignalWorkflowExecution(ctx, &workflowservice.SignalWorkflowExecutionRequest{
+							Namespace: batchParams.Namespace,
+							WorkflowExecution: &commonpb.WorkflowExecution{
+								WorkflowId: workflowID,
+								RunId:      runID,
+							},
+							SignalName: batchParams.SignalParams.SignalName,
+							Input:      batchParams.SignalParams.Input,
+						})
+						return err
 					})
 			case BatchTypeDelete:
 				err = processTask(ctx, limiter, task,
@@ -240,6 +264,27 @@ func startTaskProcessor(
 								WorkflowId: workflowID,
 								RunId:      runID,
 							},
+						})
+						return err
+					})
+			case BatchTypeReset:
+				err = processTask(ctx, limiter, task,
+					func(workflowID, runID string) error {
+						workflowExecution := &commonpb.WorkflowExecution{
+							WorkflowId: workflowID,
+							RunId:      runID,
+						}
+						eventId, err := getResetEventIDByType(ctx, batchParams.ResetParams.ResetType, batchParams.Namespace, workflowExecution, frontendClient, logger)
+						if err != nil {
+							return err
+						}
+						_, err = frontendClient.ResetWorkflowExecution(ctx, &workflowservice.ResetWorkflowExecutionRequest{
+							Namespace:                 batchParams.Namespace,
+							WorkflowExecution:         workflowExecution,
+							Reason:                    batchParams.Reason,
+							WorkflowTaskFinishEventId: eventId,
+							RequestId:                 uuid.New(),
+							ResetReapplyType:          batchParams.ResetParams.ResetReapplyType,
 						})
 						return err
 					})
@@ -295,4 +340,98 @@ func isDone(ctx context.Context) bool {
 	default:
 		return false
 	}
+}
+
+func getResetEventIDByType(ctx context.Context,
+	resetType enumspb.ResetType,
+	namespaceStr string,
+	workflowExecution *commonpb.WorkflowExecution,
+	frontendClient workflowservice.WorkflowServiceClient,
+	logger log.Logger) (int64, error) {
+	switch resetType {
+	case enumspb.RESET_TYPE_FIRST_WORKFLOW_TASK:
+		return getFirstWorkflowTaskEventID(ctx, namespaceStr, workflowExecution, frontendClient, logger)
+	case enumspb.RESET_TYPE_LAST_WORKFLOW_TASK:
+		return getLastWorkflowTaskEventID(ctx, namespaceStr, workflowExecution, frontendClient, logger)
+	default:
+		errorMsg := fmt.Sprintf("provided reset type (%v) is not supported.", resetType)
+		return 0, serviceerror.NewInvalidArgument(errorMsg)
+	}
+}
+
+func getLastWorkflowTaskEventID(ctx context.Context,
+	namespaceStr string,
+	workflowExecution *commonpb.WorkflowExecution,
+	frontendClient workflowservice.WorkflowServiceClient,
+	logger log.Logger) (workflowTaskEventID int64, err error) {
+	req := &workflowservice.GetWorkflowExecutionHistoryReverseRequest{
+		Namespace:       namespaceStr,
+		Execution:       workflowExecution,
+		MaximumPageSize: 1000,
+		NextPageToken:   nil,
+	}
+	for {
+		resp, err := frontendClient.GetWorkflowExecutionHistoryReverse(ctx, req)
+		if err != nil {
+			logger.Error("failed to run GetWorkflowExecutionHistoryReverse")
+			return 0, errors.New("failed to get workflow execution history")
+		}
+		for _, e := range resp.GetHistory().GetEvents() {
+			switch e.GetEventType() {
+			case enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED:
+				workflowTaskEventID = e.GetEventId()
+				return workflowTaskEventID, nil
+			case enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED:
+				// if there is no task completed event, set it to first scheduled event + 1
+				workflowTaskEventID = e.GetEventId() + 1
+			}
+		}
+		if len(resp.NextPageToken) == 0 {
+			break
+		}
+		req.NextPageToken = resp.NextPageToken
+	}
+	if workflowTaskEventID == 0 {
+		return 0, errors.New("unable to find any scheduled or completed task")
+	}
+	return
+}
+
+func getFirstWorkflowTaskEventID(ctx context.Context,
+	namespaceStr string,
+	workflowExecution *commonpb.WorkflowExecution,
+	frontendClient workflowservice.WorkflowServiceClient,
+	logger log.Logger) (workflowTaskEventID int64, err error) {
+	req := &workflowservice.GetWorkflowExecutionHistoryRequest{
+		Namespace:       namespaceStr,
+		Execution:       workflowExecution,
+		MaximumPageSize: 1000,
+		NextPageToken:   nil,
+	}
+	for {
+		resp, err := frontendClient.GetWorkflowExecutionHistory(ctx, req)
+		if err != nil {
+			logger.Error("failed to run GetWorkflowExecutionHistory")
+			return 0, errors.New("GetWorkflowExecutionHistory failed")
+		}
+		for _, e := range resp.GetHistory().GetEvents() {
+			switch e.GetEventType() {
+			case enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED:
+				workflowTaskEventID = e.GetEventId()
+				return workflowTaskEventID, nil
+			case enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED:
+				if workflowTaskEventID == 0 {
+					workflowTaskEventID = e.GetEventId() + 1
+				}
+			}
+		}
+		if len(resp.NextPageToken) == 0 {
+			break
+		}
+		req.NextPageToken = resp.NextPageToken
+	}
+	if workflowTaskEventID == 0 {
+		return 0, errors.New("unable to find any scheduled or completed task")
+	}
+	return
 }

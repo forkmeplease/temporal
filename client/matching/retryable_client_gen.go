@@ -65,6 +65,21 @@ func (c *retryableClient) AddWorkflowTask(
 	return resp, err
 }
 
+func (c *retryableClient) ApplyTaskQueueUserDataReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.ApplyTaskQueueUserDataReplicationEventResponse, error) {
+	var resp *matchingservice.ApplyTaskQueueUserDataReplicationEventResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.ApplyTaskQueueUserDataReplicationEvent(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) CancelOutstandingPoll(
 	ctx context.Context,
 	request *matchingservice.CancelOutstandingPollRequest,
@@ -95,45 +110,60 @@ func (c *retryableClient) DescribeTaskQueue(
 	return resp, err
 }
 
-func (c *retryableClient) GetTaskQueueMetadata(
+func (c *retryableClient) ForceUnloadTaskQueue(
 	ctx context.Context,
-	request *matchingservice.GetTaskQueueMetadataRequest,
+	request *matchingservice.ForceUnloadTaskQueueRequest,
 	opts ...grpc.CallOption,
-) (*matchingservice.GetTaskQueueMetadataResponse, error) {
-	var resp *matchingservice.GetTaskQueueMetadataResponse
+) (*matchingservice.ForceUnloadTaskQueueResponse, error) {
+	var resp *matchingservice.ForceUnloadTaskQueueResponse
 	op := func(ctx context.Context) error {
 		var err error
-		resp, err = c.client.GetTaskQueueMetadata(ctx, request, opts...)
+		resp, err = c.client.ForceUnloadTaskQueue(ctx, request, opts...)
 		return err
 	}
 	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
 	return resp, err
 }
 
-func (c *retryableClient) GetWorkerBuildIdOrdering(
+func (c *retryableClient) GetBuildIdTaskQueueMapping(
 	ctx context.Context,
-	request *matchingservice.GetWorkerBuildIdOrderingRequest,
+	request *matchingservice.GetBuildIdTaskQueueMappingRequest,
 	opts ...grpc.CallOption,
-) (*matchingservice.GetWorkerBuildIdOrderingResponse, error) {
-	var resp *matchingservice.GetWorkerBuildIdOrderingResponse
+) (*matchingservice.GetBuildIdTaskQueueMappingResponse, error) {
+	var resp *matchingservice.GetBuildIdTaskQueueMappingResponse
 	op := func(ctx context.Context) error {
 		var err error
-		resp, err = c.client.GetWorkerBuildIdOrdering(ctx, request, opts...)
+		resp, err = c.client.GetBuildIdTaskQueueMapping(ctx, request, opts...)
 		return err
 	}
 	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
 	return resp, err
 }
 
-func (c *retryableClient) InvalidateTaskQueueMetadata(
+func (c *retryableClient) GetTaskQueueUserData(
 	ctx context.Context,
-	request *matchingservice.InvalidateTaskQueueMetadataRequest,
+	request *matchingservice.GetTaskQueueUserDataRequest,
 	opts ...grpc.CallOption,
-) (*matchingservice.InvalidateTaskQueueMetadataResponse, error) {
-	var resp *matchingservice.InvalidateTaskQueueMetadataResponse
+) (*matchingservice.GetTaskQueueUserDataResponse, error) {
+	var resp *matchingservice.GetTaskQueueUserDataResponse
 	op := func(ctx context.Context) error {
 		var err error
-		resp, err = c.client.InvalidateTaskQueueMetadata(ctx, request, opts...)
+		resp, err = c.client.GetTaskQueueUserData(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
+func (c *retryableClient) GetWorkerBuildIdCompatibility(
+	ctx context.Context,
+	request *matchingservice.GetWorkerBuildIdCompatibilityRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.GetWorkerBuildIdCompatibilityResponse, error) {
+	var resp *matchingservice.GetWorkerBuildIdCompatibilityResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.GetWorkerBuildIdCompatibility(ctx, request, opts...)
 		return err
 	}
 	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
@@ -200,6 +230,21 @@ func (c *retryableClient) QueryWorkflow(
 	return resp, err
 }
 
+func (c *retryableClient) ReplicateTaskQueueUserData(
+	ctx context.Context,
+	request *matchingservice.ReplicateTaskQueueUserDataRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.ReplicateTaskQueueUserDataResponse, error) {
+	var resp *matchingservice.ReplicateTaskQueueUserDataResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.ReplicateTaskQueueUserData(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) RespondQueryTaskCompleted(
 	ctx context.Context,
 	request *matchingservice.RespondQueryTaskCompletedRequest,
@@ -215,15 +260,30 @@ func (c *retryableClient) RespondQueryTaskCompleted(
 	return resp, err
 }
 
-func (c *retryableClient) UpdateWorkerBuildIdOrdering(
+func (c *retryableClient) UpdateTaskQueueUserData(
 	ctx context.Context,
-	request *matchingservice.UpdateWorkerBuildIdOrderingRequest,
+	request *matchingservice.UpdateTaskQueueUserDataRequest,
 	opts ...grpc.CallOption,
-) (*matchingservice.UpdateWorkerBuildIdOrderingResponse, error) {
-	var resp *matchingservice.UpdateWorkerBuildIdOrderingResponse
+) (*matchingservice.UpdateTaskQueueUserDataResponse, error) {
+	var resp *matchingservice.UpdateTaskQueueUserDataResponse
 	op := func(ctx context.Context) error {
 		var err error
-		resp, err = c.client.UpdateWorkerBuildIdOrdering(ctx, request, opts...)
+		resp, err = c.client.UpdateTaskQueueUserData(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
+func (c *retryableClient) UpdateWorkerBuildIdCompatibility(
+	ctx context.Context,
+	request *matchingservice.UpdateWorkerBuildIdCompatibilityRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.UpdateWorkerBuildIdCompatibilityResponse, error) {
+	var resp *matchingservice.UpdateWorkerBuildIdCompatibilityResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.UpdateWorkerBuildIdCompatibility(ctx, request, opts...)
 		return err
 	}
 	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)

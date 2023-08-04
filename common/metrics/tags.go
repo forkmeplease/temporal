@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	enumspb "go.temporal.io/api/enums/v1"
+	enumsspb "go.temporal.io/server/api/enums/v1"
 
 	"go.temporal.io/server/common/primitives"
 )
@@ -41,15 +42,22 @@ const (
 	buildPlatformTag = "build_platform"
 	goVersionTag     = "go_version"
 
-	instance      = "instance"
-	namespace     = "namespace"
-	targetCluster = "target_cluster"
-	taskQueue     = "taskqueue"
-	workflowType  = "workflowType"
-	activityType  = "activityType"
-	commandType   = "commandType"
-	serviceName   = "service_name"
-	actionType    = "action_type"
+	instance       = "instance"
+	namespace      = "namespace"
+	namespaceState = "namespace_state"
+	targetCluster  = "target_cluster"
+	fromCluster    = "from_cluster"
+	toCluster      = "to_cluster"
+	taskQueue      = "taskqueue"
+	workflowType   = "workflowType"
+	activityType   = "activityType"
+	commandType    = "commandType"
+	serviceName    = "service_name"
+	actionType     = "action_type"
+	// Generic reason tag can be used anywhere a reason is needed.
+	reason = "reason"
+	// See server.api.enums.v1.ReplicationTaskType
+	replicationTaskType = "replicationTaskType"
 
 	namespaceAllValue = "all"
 	unknownValue      = "_unknown_"
@@ -103,6 +111,17 @@ func NamespaceUnknownTag() Tag {
 	return namespaceUnknownTag
 }
 
+// NamespaceStateTag returns a new namespace state tag.
+func NamespaceStateTag(value string) Tag {
+	if len(value) == 0 {
+		value = unknownValue
+	}
+	return &tagImpl{
+		key:   namespaceState,
+		value: value,
+	}
+}
+
 var taskQueueUnknownTag = &tagImpl{key: taskQueue, value: unknownValue}
 
 // TaskQueueUnknownTag returns a new taskqueue:unknown tag-value
@@ -121,6 +140,16 @@ func TargetClusterTag(value string) Tag {
 		value = unknownValue
 	}
 	return &tagImpl{key: targetCluster, value: value}
+}
+
+// FromClusterIDTag returns a new from cluster tag.
+func FromClusterIDTag(value int32) Tag {
+	return &tagImpl{key: fromCluster, value: strconv.FormatInt(int64(value), 10)}
+}
+
+// ToClusterIDTag returns a new to cluster tag.
+func ToClusterIDTag(value int32) Tag {
+	return &tagImpl{key: toCluster, value: strconv.FormatInt(int64(value), 10)}
 }
 
 // TaskQueueTag returns a new task queue tag.
@@ -196,15 +225,15 @@ func TaskPriorityTag(value string) Tag {
 	return &tagImpl{key: TaskPriorityTagName, value: value}
 }
 
-func QueueReaderIDTag(readerID int32) Tag {
+func QueueReaderIDTag(readerID int64) Tag {
 	return &tagImpl{key: QueueReaderIDTagName, value: strconv.Itoa(int(readerID))}
 }
 
-func QueueAlertTypeTag(value string) Tag {
+func QueueActionTag(value string) Tag {
 	if len(value) == 0 {
 		value = unknownValue
 	}
-	return &tagImpl{key: QueueAlertTypeTagName, value: value}
+	return &tagImpl{key: QueueActionTagName, value: value}
 }
 
 func QueueTypeTag(value string) Tag {
@@ -219,6 +248,11 @@ func VisibilityTypeTag(value string) Tag {
 		value = unknownValue
 	}
 	return &tagImpl{key: visibilityTypeTagName, value: value}
+}
+
+// VersionedTag represents whether a loaded task queue manager represents a specific version set.
+func VersionedTag(versioned bool) Tag {
+	return &tagImpl{key: versionedTagName, value: strconv.FormatBool(versioned)}
 }
 
 func ServiceErrorTypeTag(err error) Tag {
@@ -265,4 +299,19 @@ func StringTag(key string, value string) Tag {
 
 func CacheTypeTag(value string) Tag {
 	return &tagImpl{key: CacheTypeTagName, value: value}
+}
+
+// ReasonString is just a string but the special type is defined here to remind callers of ReasonTag to limit the
+// cardinality of possible reasons.
+type ReasonString string
+
+// ReasonTag is a generic tag can be used anywhere a reason is needed.
+// Make sure that the value is of limited cardinality.
+func ReasonTag(value ReasonString) Tag {
+	return &tagImpl{key: reason, value: string(value)}
+}
+
+// ReplicationTaskTypeTag returns a new replication task type tag.
+func ReplicationTaskTypeTag(value enumsspb.ReplicationTaskType) Tag {
+	return &tagImpl{key: replicationTaskType, value: value.String()}
 }

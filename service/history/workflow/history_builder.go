@@ -32,12 +32,15 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
+	sdkpb "go.temporal.io/api/sdk/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
+	updatepb "go.temporal.io/api/update/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 
 	"go.temporal.io/server/api/historyservice/v1"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/clock"
+	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/primitives/timestamp"
 )
@@ -67,6 +70,8 @@ type (
 
 	TaskIDGenerator func(number int) ([]int64, error)
 
+	BufferedEventFilter func(*historypb.HistoryEvent) bool
+
 	HistoryBuilder struct {
 		state           HistoryBuilderState
 		timeSource      clock.TimeSource
@@ -89,6 +94,8 @@ type (
 
 		// scheduled to started event ID mapping
 		scheduledIDToStartedID map[int64]int64
+
+		metricsHandler metrics.Handler
 	}
 )
 
@@ -98,6 +105,7 @@ func NewMutableHistoryBuilder(
 	version int64,
 	nextEventID int64,
 	dbBufferBatch []*historypb.HistoryEvent,
+	metricsHandler metrics.Handler,
 ) *HistoryBuilder {
 	return &HistoryBuilder{
 		state:           HistoryBuilderStateMutable,
@@ -115,13 +123,16 @@ func NewMutableHistoryBuilder(
 		memLatestBatch:         nil,
 		memBufferBatch:         nil,
 		scheduledIDToStartedID: make(map[int64]int64),
+
+		metricsHandler: metricsHandler,
 	}
 }
 
 func NewImmutableHistoryBuilder(
-	history []*historypb.HistoryEvent,
+	histories ...[]*historypb.HistoryEvent,
 ) *HistoryBuilder {
-	lastEvent := history[len(history)-1]
+	lastHistory := histories[len(histories)-1]
+	lastEvent := lastHistory[len(lastHistory)-1]
 	return &HistoryBuilder{
 		state:           HistoryBuilderStateImmutable,
 		timeSource:      nil,
@@ -134,11 +145,20 @@ func NewImmutableHistoryBuilder(
 
 		dbBufferBatch:          nil,
 		dbClearBuffer:          false,
-		memEventsBatches:       nil,
-		memLatestBatch:         history,
+		memEventsBatches:       histories,
+		memLatestBatch:         nil,
 		memBufferBatch:         nil,
 		scheduledIDToStartedID: nil,
+
+		metricsHandler: nil,
 	}
+}
+
+func (b *HistoryBuilder) IsDirty() bool {
+	return len(b.memEventsBatches) > 0 ||
+		len(b.memLatestBatch) > 0 ||
+		len(b.memBufferBatch) > 0 ||
+		len(b.scheduledIDToStartedID) > 0
 }
 
 // NOTE:
@@ -178,6 +198,8 @@ func (b *HistoryBuilder) AddWorkflowExecutionStartedEvent(
 		OriginalExecutionRunId:          originalRunID,
 		Memo:                            req.Memo,
 		SearchAttributes:                req.SearchAttributes,
+		WorkflowId:                      req.WorkflowId,
+		SourceVersionStamp:              request.SourceVersionStamp,
 	}
 	parentInfo := request.ParentExecutionInfo
 	if parentInfo != nil {
@@ -191,16 +213,17 @@ func (b *HistoryBuilder) AddWorkflowExecutionStartedEvent(
 		WorkflowExecutionStartedEventAttributes: attributes,
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowTaskScheduledEvent(
 	taskQueue *taskqueuepb.TaskQueue,
 	startToCloseTimeout *time.Duration,
 	attempt int32,
-	now time.Time,
+	scheduleTime time.Time,
 ) *historypb.HistoryEvent {
-	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED, now)
+	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED, scheduleTime)
 	event.Attributes = &historypb.HistoryEvent_WorkflowTaskScheduledEventAttributes{
 		WorkflowTaskScheduledEventAttributes: &historypb.WorkflowTaskScheduledEventAttributes{
 			TaskQueue:           taskQueue,
@@ -209,25 +232,31 @@ func (b *HistoryBuilder) AddWorkflowTaskScheduledEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowTaskStartedEvent(
 	scheduledEventID int64,
 	requestID string,
 	identity string,
-	now time.Time,
+	startTime time.Time,
+	suggestContinueAsNew bool,
+	historySizeBytes int64,
 ) *historypb.HistoryEvent {
-	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED, now)
+	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED, startTime)
 	event.Attributes = &historypb.HistoryEvent_WorkflowTaskStartedEventAttributes{
 		WorkflowTaskStartedEventAttributes: &historypb.WorkflowTaskStartedEventAttributes{
-			ScheduledEventId: scheduledEventID,
-			Identity:         identity,
-			RequestId:        requestID,
+			ScheduledEventId:     scheduledEventID,
+			Identity:             identity,
+			RequestId:            requestID,
+			SuggestContinueAsNew: suggestContinueAsNew,
+			HistorySizeBytes:     historySizeBytes,
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowTaskCompletedEvent(
@@ -235,6 +264,9 @@ func (b *HistoryBuilder) AddWorkflowTaskCompletedEvent(
 	startedEventID int64,
 	identity string,
 	checksum string,
+	workerVersionStamp *commonpb.WorkerVersionStamp,
+	sdkMetadata *sdkpb.WorkflowTaskCompletedMetadata,
+	meteringMetadata *commonpb.MeteringMetadata,
 ) *historypb.HistoryEvent {
 	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED, b.timeSource.Now())
 	event.Attributes = &historypb.HistoryEvent_WorkflowTaskCompletedEventAttributes{
@@ -243,10 +275,14 @@ func (b *HistoryBuilder) AddWorkflowTaskCompletedEvent(
 			StartedEventId:   startedEventID,
 			Identity:         identity,
 			BinaryChecksum:   checksum,
+			WorkerVersion:    workerVersionStamp,
+			SdkMetadata:      sdkMetadata,
+			MeteringMetadata: meteringMetadata,
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowTaskTimedOutEvent(
@@ -263,7 +299,8 @@ func (b *HistoryBuilder) AddWorkflowTaskTimedOutEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowTaskFailedEvent(
@@ -291,7 +328,8 @@ func (b *HistoryBuilder) AddWorkflowTaskFailedEvent(
 			BinaryChecksum:   checksum,
 		},
 	}
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddActivityTaskScheduledEvent(
@@ -312,10 +350,12 @@ func (b *HistoryBuilder) AddActivityTaskScheduledEvent(
 			StartToCloseTimeout:          command.StartToCloseTimeout,
 			HeartbeatTimeout:             command.HeartbeatTimeout,
 			RetryPolicy:                  command.RetryPolicy,
+			UseCompatibleVersion:         command.UseCompatibleVersion,
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddActivityTaskStartedEvent(
@@ -336,7 +376,8 @@ func (b *HistoryBuilder) AddActivityTaskStartedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddActivityTaskCompletedEvent(
@@ -355,7 +396,8 @@ func (b *HistoryBuilder) AddActivityTaskCompletedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddActivityTaskFailedEvent(
@@ -376,7 +418,8 @@ func (b *HistoryBuilder) AddActivityTaskFailedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddActivityTaskTimedOutEvent(
@@ -395,7 +438,8 @@ func (b *HistoryBuilder) AddActivityTaskTimedOutEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddCompletedWorkflowEvent(
@@ -412,7 +456,8 @@ func (b *HistoryBuilder) AddCompletedWorkflowEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddFailWorkflowEvent(
@@ -420,7 +465,7 @@ func (b *HistoryBuilder) AddFailWorkflowEvent(
 	retryState enumspb.RetryState,
 	command *commandpb.FailWorkflowExecutionCommandAttributes,
 	newExecutionRunID string,
-) *historypb.HistoryEvent {
+) (*historypb.HistoryEvent, int64) {
 	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED, b.timeSource.Now())
 	event.Attributes = &historypb.HistoryEvent_WorkflowExecutionFailedEventAttributes{
 		WorkflowExecutionFailedEventAttributes: &historypb.WorkflowExecutionFailedEventAttributes{
@@ -446,7 +491,8 @@ func (b *HistoryBuilder) AddTimeoutWorkflowEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowExecutionTerminatedEvent(
@@ -463,6 +509,39 @@ func (b *HistoryBuilder) AddWorkflowExecutionTerminatedEvent(
 		},
 	}
 
+	event, _ = b.appendEvents(event)
+	return event
+}
+
+func (b *HistoryBuilder) AddWorkflowExecutionUpdateAcceptedEvent(
+	protocolInstanceID string,
+	acceptedRequestMessageId string,
+	acceptedRequestSequencingEventId int64,
+	acceptedRequest *updatepb.Request,
+) *historypb.HistoryEvent {
+
+	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED, b.timeSource.Now())
+	event.Attributes = &historypb.HistoryEvent_WorkflowExecutionUpdateAcceptedEventAttributes{
+		WorkflowExecutionUpdateAcceptedEventAttributes: &historypb.WorkflowExecutionUpdateAcceptedEventAttributes{
+			ProtocolInstanceId:               protocolInstanceID,
+			AcceptedRequestMessageId:         acceptedRequestMessageId,
+			AcceptedRequestSequencingEventId: acceptedRequestSequencingEventId,
+			AcceptedRequest:                  acceptedRequest,
+		},
+	}
+	event, _ = b.appendEvents(event)
+	return event
+}
+
+func (b *HistoryBuilder) AddWorkflowExecutionUpdateCompletedEvent(acceptedEventID int64, updResp *updatepb.Response) (*historypb.HistoryEvent, int64) {
+	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED, b.timeSource.Now())
+	event.Attributes = &historypb.HistoryEvent_WorkflowExecutionUpdateCompletedEventAttributes{
+		WorkflowExecutionUpdateCompletedEventAttributes: &historypb.WorkflowExecutionUpdateCompletedEventAttributes{
+			AcceptedEventId: acceptedEventID,
+			Meta:            updResp.GetMeta(),
+			Outcome:         updResp.GetOutcome(),
+		},
+	}
 	return b.appendEvents(event)
 }
 
@@ -487,12 +566,14 @@ func (b *HistoryBuilder) AddContinuedAsNewEvent(
 		LastCompletionResult:         command.LastCompletionResult,
 		Memo:                         command.Memo,
 		SearchAttributes:             command.SearchAttributes,
+		UseCompatibleVersion:         command.UseCompatibleVersion,
 	}
 	event.Attributes = &historypb.HistoryEvent_WorkflowExecutionContinuedAsNewEventAttributes{
 		WorkflowExecutionContinuedAsNewEventAttributes: attributes,
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddTimerStartedEvent(
@@ -508,7 +589,8 @@ func (b *HistoryBuilder) AddTimerStartedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddTimerFiredEvent(
@@ -523,7 +605,8 @@ func (b *HistoryBuilder) AddTimerFiredEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddActivityTaskCancelRequestedEvent(
@@ -538,7 +621,8 @@ func (b *HistoryBuilder) AddActivityTaskCancelRequestedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddActivityTaskCanceledEvent(
@@ -559,7 +643,8 @@ func (b *HistoryBuilder) AddActivityTaskCanceledEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddTimerCanceledEvent(
@@ -578,7 +663,8 @@ func (b *HistoryBuilder) AddTimerCanceledEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowExecutionCancelRequestedEvent(
@@ -594,7 +680,8 @@ func (b *HistoryBuilder) AddWorkflowExecutionCancelRequestedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowExecutionCanceledEvent(
@@ -609,7 +696,8 @@ func (b *HistoryBuilder) AddWorkflowExecutionCanceledEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddRequestCancelExternalWorkflowExecutionInitiatedEvent(
@@ -633,7 +721,8 @@ func (b *HistoryBuilder) AddRequestCancelExternalWorkflowExecutionInitiatedEvent
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddRequestCancelExternalWorkflowExecutionFailedEvent(
@@ -661,7 +750,8 @@ func (b *HistoryBuilder) AddRequestCancelExternalWorkflowExecutionFailedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddExternalWorkflowExecutionCancelRequested(
@@ -684,7 +774,8 @@ func (b *HistoryBuilder) AddExternalWorkflowExecutionCancelRequested(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddSignalExternalWorkflowExecutionInitiatedEvent(
@@ -710,7 +801,8 @@ func (b *HistoryBuilder) AddSignalExternalWorkflowExecutionInitiatedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddUpsertWorkflowSearchAttributesEvent(
@@ -725,7 +817,8 @@ func (b *HistoryBuilder) AddUpsertWorkflowSearchAttributesEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowPropertiesModifiedEvent(
@@ -740,7 +833,8 @@ func (b *HistoryBuilder) AddWorkflowPropertiesModifiedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddSignalExternalWorkflowExecutionFailedEvent(
@@ -769,7 +863,8 @@ func (b *HistoryBuilder) AddSignalExternalWorkflowExecutionFailedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddExternalWorkflowExecutionSignaled(
@@ -794,7 +889,8 @@ func (b *HistoryBuilder) AddExternalWorkflowExecutionSignaled(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddMarkerRecordedEvent(
@@ -812,7 +908,8 @@ func (b *HistoryBuilder) AddMarkerRecordedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddWorkflowExecutionSignaledEvent(
@@ -820,18 +917,21 @@ func (b *HistoryBuilder) AddWorkflowExecutionSignaledEvent(
 	input *commonpb.Payloads,
 	identity string,
 	header *commonpb.Header,
+	skipGenerateWorkflowTask bool,
 ) *historypb.HistoryEvent {
 	event := b.createNewHistoryEvent(enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED, b.timeSource.Now())
 	event.Attributes = &historypb.HistoryEvent_WorkflowExecutionSignaledEventAttributes{
 		WorkflowExecutionSignaledEventAttributes: &historypb.WorkflowExecutionSignaledEventAttributes{
-			SignalName: signalName,
-			Input:      input,
-			Identity:   identity,
-			Header:     header,
+			SignalName:               signalName,
+			Input:                    input,
+			Identity:                 identity,
+			Header:                   header,
+			SkipGenerateWorkflowTask: skipGenerateWorkflowTask,
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddStartChildWorkflowExecutionInitiatedEvent(
@@ -860,10 +960,12 @@ func (b *HistoryBuilder) AddStartChildWorkflowExecutionInitiatedEvent(
 			Memo:                         command.Memo,
 			SearchAttributes:             command.SearchAttributes,
 			ParentClosePolicy:            command.GetParentClosePolicy(),
+			UseCompatibleVersion:         command.UseCompatibleVersion,
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddChildWorkflowExecutionStartedEvent(
@@ -886,7 +988,8 @@ func (b *HistoryBuilder) AddChildWorkflowExecutionStartedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddStartChildWorkflowExecutionFailedEvent(
@@ -913,7 +1016,8 @@ func (b *HistoryBuilder) AddStartChildWorkflowExecutionFailedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddChildWorkflowExecutionCompletedEvent(
@@ -938,7 +1042,8 @@ func (b *HistoryBuilder) AddChildWorkflowExecutionCompletedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddChildWorkflowExecutionFailedEvent(
@@ -965,7 +1070,8 @@ func (b *HistoryBuilder) AddChildWorkflowExecutionFailedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddChildWorkflowExecutionCanceledEvent(
@@ -990,7 +1096,8 @@ func (b *HistoryBuilder) AddChildWorkflowExecutionCanceledEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddChildWorkflowExecutionTerminatedEvent(
@@ -1013,7 +1120,8 @@ func (b *HistoryBuilder) AddChildWorkflowExecutionTerminatedEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) AddChildWorkflowExecutionTimedOutEvent(
@@ -1038,27 +1146,56 @@ func (b *HistoryBuilder) AddChildWorkflowExecutionTimedOutEvent(
 		},
 	}
 
-	return b.appendEvents(event)
+	event, _ = b.appendEvents(event)
+	return event
 }
 
 func (b *HistoryBuilder) appendEvents(
 	event *historypb.HistoryEvent,
-) *historypb.HistoryEvent {
+) (*historypb.HistoryEvent, int64) {
 	b.assertMutable()
+	batchID := common.EmptyEventID
 	if b.bufferEvent(event.GetEventType()) {
 		b.memBufferBatch = append(b.memBufferBatch, event)
 	} else {
 		b.memLatestBatch = append(b.memLatestBatch, event)
+		batchID = b.memLatestBatch[0].EventId
 	}
-	return event
+	return event, batchID
 }
 
 func (b *HistoryBuilder) HasBufferEvents() bool {
 	return len(b.dbBufferBatch) > 0 || len(b.memBufferBatch) > 0
 }
 
-func (b *HistoryBuilder) BufferEventSize() int {
+// HasAnyBufferedEvent returns true if there is at least one buffered event that matches the provided filter.
+func (b *HistoryBuilder) HasAnyBufferedEvent(filter BufferedEventFilter) bool {
+	for _, event := range b.memBufferBatch {
+		if filter(event) {
+			return true
+		}
+	}
+	for _, event := range b.dbBufferBatch {
+		if filter(event) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *HistoryBuilder) NumBufferedEvents() int {
 	return len(b.dbBufferBatch) + len(b.memBufferBatch)
+}
+
+func (b *HistoryBuilder) SizeInBytesOfBufferedEvents() int {
+	size := 0
+	for _, ev := range b.dbBufferBatch {
+		size += ev.Size()
+	}
+	for _, ev := range b.memBufferBatch {
+		size += ev.Size()
+	}
+	return size
 }
 
 func (b *HistoryBuilder) NextEventID() int64 {
@@ -1267,11 +1404,15 @@ func (b *HistoryBuilder) bufferEvent(
 		enumspb.EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED,
 		enumspb.EVENT_TYPE_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_INITIATED,
 		enumspb.EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES,
-		enumspb.EVENT_TYPE_WORKFLOW_UPDATE_REJECTED,
-		enumspb.EVENT_TYPE_WORKFLOW_UPDATE_ACCEPTED,
-		enumspb.EVENT_TYPE_WORKFLOW_UPDATE_COMPLETED,
 		enumspb.EVENT_TYPE_WORKFLOW_PROPERTIES_MODIFIED:
 		// do not buffer event if event is directly generated from a corresponding command
+		return false
+
+	case // events generated directly from messages should not be buffered
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_REJECTED,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED,
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED:
+		// do not buffer event if event is directly generated from a message
 		return false
 
 	default:
@@ -1368,6 +1509,7 @@ func (b *HistoryBuilder) wireEventIDs(
 func (b *HistoryBuilder) reorderBuffer(
 	bufferEvents []*historypb.HistoryEvent,
 ) []*historypb.HistoryEvent {
+	b.emitInorderedBufferedEvents(bufferEvents)
 	reorderBuffer := make([]*historypb.HistoryEvent, 0, len(bufferEvents))
 	reorderEvents := make([]*historypb.HistoryEvent, 0, len(bufferEvents))
 	for _, event := range bufferEvents {
@@ -1388,6 +1530,47 @@ func (b *HistoryBuilder) reorderBuffer(
 	}
 
 	return append(reorderEvents, reorderBuffer...)
+}
+
+func (b *HistoryBuilder) emitInorderedBufferedEvents(bufferedEvents []*historypb.HistoryEvent) {
+	completedActivities := make(map[int64]struct{})
+	completedChildWorkflows := make(map[int64]struct{})
+	var inorderedEventsCount int64
+	for _, event := range bufferedEvents {
+		switch event.GetEventType() {
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_STARTED:
+			if _, seenCompleted := completedActivities[event.GetEventId()]; seenCompleted {
+				inorderedEventsCount++
+			}
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
+			completedActivities[event.GetActivityTaskCompletedEventAttributes().GetStartedEventId()] = struct{}{}
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_FAILED:
+			completedActivities[event.GetActivityTaskFailedEventAttributes().GetStartedEventId()] = struct{}{}
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
+			completedActivities[event.GetActivityTaskTimedOutEventAttributes().GetStartedEventId()] = struct{}{}
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
+			completedActivities[event.GetActivityTaskCanceledEventAttributes().GetStartedEventId()] = struct{}{}
+
+		case enumspb.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED:
+			if _, seenCompleted := completedChildWorkflows[event.GetEventId()]; seenCompleted {
+				inorderedEventsCount++
+			}
+		case enumspb.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED:
+			completedChildWorkflows[event.GetChildWorkflowExecutionCompletedEventAttributes().GetStartedEventId()] = struct{}{}
+		case enumspb.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED:
+			completedChildWorkflows[event.GetChildWorkflowExecutionFailedEventAttributes().GetStartedEventId()] = struct{}{}
+		case enumspb.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_TIMED_OUT:
+			completedChildWorkflows[event.GetChildWorkflowExecutionTimedOutEventAttributes().GetStartedEventId()] = struct{}{}
+		case enumspb.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_CANCELED:
+			completedChildWorkflows[event.GetChildWorkflowExecutionCanceledEventAttributes().GetStartedEventId()] = struct{}{}
+		case enumspb.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_TERMINATED:
+			completedChildWorkflows[event.GetChildWorkflowExecutionTerminatedEventAttributes().GetStartedEventId()] = struct{}{}
+		}
+	}
+
+	if inorderedEventsCount > 0 && b.metricsHandler != nil {
+		b.metricsHandler.Counter(metrics.InorderBufferedEventsCounter.GetMetricName()).Record(inorderedEventsCount)
+	}
 }
 
 func (b *HistoryBuilder) HasActivityFinishEvent(

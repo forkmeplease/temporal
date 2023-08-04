@@ -37,12 +37,14 @@ import (
 	"github.com/stretchr/testify/suite"
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
-	"go.temporal.io/api/serviceerror"
 
 	persistencespb "go.temporal.io/server/api/persistence/v1"
+	"go.temporal.io/server/common"
+	"go.temporal.io/server/common/debug"
 	"go.temporal.io/server/common/definition"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/persistence"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/serialization"
 	"go.temporal.io/server/common/primitives/timestamp"
@@ -56,6 +58,7 @@ type (
 
 		ShardID     int32
 		RangeID     int64
+		Owner       string
 		WorkflowKey definition.WorkflowKey
 
 		ShardManager     p.ShardManager
@@ -74,6 +77,15 @@ type (
 var (
 	fakeImmediateTaskCategory = tasks.NewCategory(1234, tasks.CategoryTypeImmediate, "fake-immediate")
 	fakeScheduledTaskCategory = tasks.NewCategory(2345, tasks.CategoryTypeScheduled, "fake-scheduled")
+
+	taskCategories = []tasks.Category{
+		tasks.CategoryTransfer,
+		tasks.CategoryTimer,
+		tasks.CategoryReplication,
+		tasks.CategoryVisibility,
+		fakeImmediateTaskCategory,
+		fakeScheduledTaskCategory,
+	}
 )
 
 func NewExecutionMutableStateTaskSuite(
@@ -93,35 +105,37 @@ func NewExecutionMutableStateTaskSuite(
 		ExecutionManager: p.NewExecutionManager(
 			executionStore,
 			serializer,
+			nil,
 			logger,
 			dynamicconfig.GetIntPropertyFn(4*1024*1024),
 		),
-		Logger:  logger,
-		ShardID: 1,
+		Logger: logger,
 	}
 }
 
 func (s *ExecutionMutableStateTaskSuite) SetupTest() {
 	s.Assertions = require.New(s.T())
-	s.Ctx, s.Cancel = context.WithTimeout(context.Background(), time.Second*30)
+	s.Ctx, s.Cancel = context.WithTimeout(context.Background(), 30*time.Second*debug.TimeoutMultiplier)
 
-	s.ShardID = 1 + s.ShardID
+	s.ShardID++
 	resp, err := s.ShardManager.GetOrCreateShard(s.Ctx, &p.GetOrCreateShardRequest{
 		ShardID: s.ShardID,
 		InitialShardInfo: &persistencespb.ShardInfo{
 			ShardId: s.ShardID,
 			RangeId: 1,
+			Owner:   "test-shard-owner",
 		},
 	})
 	s.NoError(err)
 	previousRangeID := resp.ShardInfo.RangeId
-	resp.ShardInfo.RangeId += 1
+	resp.ShardInfo.RangeId++
 	err = s.ShardManager.UpdateShard(s.Ctx, &p.UpdateShardRequest{
 		ShardInfo:       resp.ShardInfo,
 		PreviousRangeID: previousRangeID,
 	})
 	s.NoError(err)
 	s.RangeID = resp.ShardInfo.RangeId
+	s.Owner = resp.ShardInfo.Owner
 
 	s.WorkflowKey = definition.NewWorkflowKey(
 		uuid.New().String(),
@@ -129,6 +143,15 @@ func (s *ExecutionMutableStateTaskSuite) SetupTest() {
 		uuid.New().String(),
 	)
 
+	for _, category := range taskCategories {
+		err := s.ExecutionManager.RegisterHistoryTaskReader(s.Ctx, &p.RegisterHistoryTaskReaderRequest{
+			ShardID:      s.ShardID,
+			ShardOwner:   s.Owner,
+			TaskCategory: category,
+			ReaderID:     common.DefaultQueueReaderID,
+		})
+		s.NoError(err)
+	}
 }
 
 func (s *ExecutionMutableStateTaskSuite) TearDownTest() {
@@ -148,6 +171,15 @@ func (s *ExecutionMutableStateTaskSuite) TearDownTest() {
 		ExclusiveMaxTaskKey: tasks.NewKey(time.Unix(0, math.MaxInt64), 0),
 	})
 	s.NoError(err)
+
+	for _, category := range taskCategories {
+		s.ExecutionManager.UnregisterHistoryTaskReader(s.Ctx, &p.UnregisterHistoryTaskReaderRequest{
+			ShardID:      s.ShardID,
+			ShardOwner:   s.Owner,
+			TaskCategory: category,
+			ReaderID:     common.DefaultQueueReaderID,
+		})
+	}
 
 	s.Cancel()
 }
@@ -426,6 +458,36 @@ func (s *ExecutionMutableStateTaskSuite) TestAddGetVisibilityTasks_Multiple() {
 	s.Equal(visibilityTasks, loadedTasks)
 }
 
+func (s *ExecutionMutableStateTaskSuite) TestIsReplicationDLQEmpty() {
+	testShardID := int32(1)
+	isEmpty, err := s.ExecutionManager.IsReplicationDLQEmpty(context.Background(), &p.GetReplicationTasksFromDLQRequest{
+		GetHistoryTasksRequest: p.GetHistoryTasksRequest{
+			ShardID:             testShardID,
+			TaskCategory:        tasks.CategoryReplication,
+			InclusiveMinTaskKey: tasks.NewImmediateKey(0),
+		},
+		SourceClusterName: "test",
+	})
+	s.NoError(err)
+	s.True(isEmpty)
+	err = s.ExecutionManager.PutReplicationTaskToDLQ(context.Background(), &p.PutReplicationTaskToDLQRequest{
+		ShardID:           testShardID,
+		SourceClusterName: "test",
+		TaskInfo:          &persistencespb.ReplicationTaskInfo{},
+	})
+	s.NoError(err)
+	isEmpty, err = s.ExecutionManager.IsReplicationDLQEmpty(context.Background(), &p.GetReplicationTasksFromDLQRequest{
+		GetHistoryTasksRequest: p.GetHistoryTasksRequest{
+			ShardID:             testShardID,
+			TaskCategory:        tasks.CategoryReplication,
+			InclusiveMinTaskKey: tasks.NewImmediateKey(0),
+		},
+		SourceClusterName: "test",
+	})
+	s.NoError(err)
+	s.False(isEmpty)
+}
+
 func (s *ExecutionMutableStateTaskSuite) TestGetTimerTasksOrdered() {
 	now := time.Now().Truncate(p.ScheduledTaskMinPrecision)
 	timerTasks := []tasks.Task{
@@ -518,6 +580,7 @@ func (s *ExecutionMutableStateTaskSuite) TestGetScheduledTasksOrdered() {
 	response, err := s.ExecutionManager.GetHistoryTasks(s.Ctx, &p.GetHistoryTasksRequest{
 		ShardID:             s.ShardID,
 		TaskCategory:        fakeScheduledTaskCategory,
+		ReaderID:            common.DefaultQueueReaderID,
 		InclusiveMinTaskKey: tasks.NewKey(now, 0),
 		ExclusiveMaxTaskKey: tasks.NewKey(now.Add(time.Second), 0),
 		BatchSize:           10,
@@ -565,6 +628,7 @@ func (s *ExecutionMutableStateTaskSuite) PaginateTasks(
 	request := &p.GetHistoryTasksRequest{
 		ShardID:             s.ShardID,
 		TaskCategory:        category,
+		ReaderID:            common.DefaultQueueReaderID,
 		InclusiveMinTaskKey: inclusiveMinTaskKey,
 		ExclusiveMaxTaskKey: exclusiveMaxTaskKey,
 		BatchSize:           batchSize,
@@ -619,27 +683,28 @@ func (s *ExecutionMutableStateTaskSuite) GetAndCompleteHistoryTask(
 	task tasks.Task,
 ) {
 	key := task.GetKey()
-	resp, err := s.ExecutionManager.GetHistoryTask(s.Ctx, &p.GetHistoryTaskRequest{
+	var minKey, maxKey tasks.Key
+	if category.Type() == tasks.CategoryTypeImmediate {
+		minKey = key
+		maxKey = minKey.Next()
+	} else {
+		minKey = tasks.NewKey(key.FireTime, 0)
+		maxKey = tasks.NewKey(key.FireTime.Add(persistence.ScheduledTaskMinPrecision), 0)
+	}
+
+	historyTasks := s.PaginateTasks(category, minKey, maxKey, 1)
+	s.Len(historyTasks, 1)
+	s.Equal(task, historyTasks[0])
+
+	err := s.ExecutionManager.CompleteHistoryTask(s.Ctx, &p.CompleteHistoryTaskRequest{
 		ShardID:      s.ShardID,
 		TaskCategory: category,
 		TaskKey:      key,
 	})
 	s.NoError(err)
-	s.Equal(task, resp.Task)
 
-	err = s.ExecutionManager.CompleteHistoryTask(s.Ctx, &p.CompleteHistoryTaskRequest{
-		ShardID:      s.ShardID,
-		TaskCategory: category,
-		TaskKey:      key,
-	})
-	s.NoError(err)
-
-	_, err = s.ExecutionManager.GetHistoryTask(s.Ctx, &p.GetHistoryTaskRequest{
-		ShardID:      s.ShardID,
-		TaskCategory: category,
-		TaskKey:      key,
-	})
-	s.IsType(&serviceerror.NotFound{}, err)
+	historyTasks = s.PaginateTasks(category, minKey, maxKey, 1)
+	s.Empty(historyTasks)
 }
 
 func newTestSerializer(

@@ -53,6 +53,7 @@ const (
 	testGetDurationPropertyStructuredDefaults         = "testGetDurationPropertyStructuredDefaults"
 	testGetBoolPropertyFilteredByNamespaceIDKey       = "testGetBoolPropertyFilteredByNamespaceIDKey"
 	testGetBoolPropertyFilteredByTaskQueueInfoKey     = "testGetBoolPropertyFilteredByTaskQueueInfoKey"
+	testGetStringPropertyFilteredByNamespaceIDKey     = "testGetStringPropertyFilteredByNamespaceIDKey"
 )
 
 // Note: fileBasedClientSuite also heavily tests Collection, since some tests are easier with data
@@ -95,6 +96,14 @@ func (s *collectionSuite) TestGetStringPropertyFnWithNamespaceFilter() {
 	s.Equal("abc", value(namespace))
 	s.client[DefaultEventEncoding] = "efg"
 	s.Equal("efg", value(namespace))
+}
+
+func (s *collectionSuite) TestGetStringPropertyFnWithNamespaceIDFilter() {
+	namespaceID := "testNamespaceID"
+	value := s.cln.GetStringPropertyFnWithNamespaceIDFilter(testGetStringPropertyFilteredByNamespaceIDKey, "abc")
+	s.Equal("abc", value(namespaceID))
+	s.client[testGetStringPropertyFilteredByNamespaceIDKey] = "efg"
+	s.Equal("efg", value(namespaceID))
 }
 
 func (s *collectionSuite) TestGetIntPropertyFilteredByTaskQueueInfo() {
@@ -142,6 +151,10 @@ func (s *collectionSuite) TestGetDurationProperty() {
 	s.Equal(time.Second, value())
 	s.client[testGetDurationPropertyKey] = time.Minute
 	s.Equal(time.Minute, value())
+	s.client[testGetDurationPropertyKey] = 33
+	s.Equal(33*time.Second, value())
+	s.client[testGetDurationPropertyKey] = "33"
+	s.Equal(33*time.Second, value())
 }
 
 func (s *collectionSuite) TestGetDurationPropertyFilteredByNamespace() {

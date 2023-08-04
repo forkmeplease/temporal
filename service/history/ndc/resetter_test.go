@@ -91,11 +91,10 @@ func (s *resetterSuite) SetupTest() {
 
 	s.mockShard = shard.NewTestContext(
 		s.controller,
-		&persistence.ShardInfoWithFailover{
-			ShardInfo: &persistencespb.ShardInfo{
-				ShardId: 10,
-				RangeId: 1,
-			}},
+		&persistencespb.ShardInfo{
+			ShardId: 10,
+			RangeId: 1,
+		},
 		tests.NewDynamicConfig(),
 	)
 
@@ -186,6 +185,7 @@ func (s *resetterSuite) TestResetWorkflow_NoError() {
 		newBranchToken,
 		gomock.Any(),
 	).Return(s.mockRebuiltMutableState, rebuiltHistorySize, nil)
+	s.mockRebuiltMutableState.EXPECT().AddHistorySize(rebuiltHistorySize)
 
 	shardID := s.mockShard.GetShardID()
 	s.mockExecManager.EXPECT().ForkHistoryBranch(gomock.Any(), &persistence.ForkHistoryBranchRequest{
@@ -193,6 +193,7 @@ func (s *resetterSuite) TestResetWorkflow_NoError() {
 		ForkNodeID:      baseEventID + 1,
 		Info:            persistence.BuildHistoryGarbageCleanupInfo(s.namespaceID.String(), s.workflowID, s.newRunID),
 		ShardID:         shardID,
+		NamespaceID:     s.namespaceID.String(),
 	}).Return(&persistence.ForkHistoryBranchResponse{NewBranchToken: newBranchToken}, nil)
 
 	rebuiltMutableState, err := s.workflowResetter.resetWorkflow(
@@ -205,7 +206,6 @@ func (s *resetterSuite) TestResetWorkflow_NoError() {
 	)
 	s.NoError(err)
 	s.Equal(s.mockRebuiltMutableState, rebuiltMutableState)
-	s.Equal(s.newContext.GetHistorySize(), rebuiltHistorySize)
 	s.True(mockBaseWorkflowReleaseFnCalled)
 }
 

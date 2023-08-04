@@ -32,15 +32,17 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blang/semver/v4"
+	"github.com/gocql/gocql"
 	"go.uber.org/zap/zaptest"
 
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/log"
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/cassandra"
-	"go.temporal.io/server/common/persistence/nosql/nosqlplugin/cassandra/gocql"
+	commongocql "go.temporal.io/server/common/persistence/nosql/nosqlplugin/cassandra/gocql"
 	"go.temporal.io/server/common/resolver"
 	"go.temporal.io/server/common/shuffle"
 	"go.temporal.io/server/environment"
@@ -98,7 +100,12 @@ func SetUpCassandraDatabase(cfg *config.Cassandra, logger log.Logger) {
 	// NOTE need to connect with empty name to create new database
 	adminCfg.Keyspace = "system"
 
-	session, err := gocql.NewSession(adminCfg, resolver.NewNoopResolver(), logger)
+	session, err := commongocql.NewSession(
+		func() (*gocql.ClusterConfig, error) {
+			return commongocql.NewCassandraCluster(adminCfg, resolver.NewNoopResolver())
+		},
+		logger,
+	)
 	if err != nil {
 		panic(fmt.Sprintf("unable to create Cassandra session: %v", err))
 	}
@@ -121,7 +128,12 @@ func SetUpCassandraSchema(cfg *config.Cassandra, logger log.Logger) {
 }
 
 func ApplySchemaUpdate(cfg *config.Cassandra, schemaFile string, logger log.Logger) {
-	session, err := gocql.NewSession(*cfg, resolver.NewNoopResolver(), logger)
+	session, err := commongocql.NewSession(
+		func() (*gocql.ClusterConfig, error) {
+			return commongocql.NewCassandraCluster(*cfg, resolver.NewNoopResolver())
+		},
+		logger,
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -150,7 +162,12 @@ func TearDownCassandraKeyspace(cfg *config.Cassandra) {
 	// NOTE need to connect with empty name to create new database
 	adminCfg.Keyspace = "system"
 
-	session, err := gocql.NewSession(adminCfg, resolver.NewNoopResolver(), log.NewNoopLogger())
+	session, err := commongocql.NewSession(
+		func() (*gocql.ClusterConfig, error) {
+			return commongocql.NewCassandraCluster(adminCfg, resolver.NewNoopResolver())
+		},
+		log.NewNoopLogger(),
+	)
 	if err != nil {
 		panic(fmt.Sprintf("unable to create Cassandra session: %v", err))
 	}
@@ -225,10 +242,11 @@ func GetSchemaFiles(schemaDir string, logger log.Logger) []string {
 // NewCassandraConfig returns a new Cassandra config for test
 func NewCassandraConfig() *config.Cassandra {
 	return &config.Cassandra{
-		User:     testCassandraUser,
-		Password: testCassandraPassword,
-		Hosts:    environment.GetCassandraAddress(),
-		Port:     environment.GetCassandraPort(),
-		Keyspace: testCassandraDatabaseNamePrefix + shuffle.String(testCassandraDatabaseNameSuffix),
+		User:           testCassandraUser,
+		Password:       testCassandraPassword,
+		Hosts:          environment.GetCassandraAddress(),
+		Port:           environment.GetCassandraPort(),
+		Keyspace:       testCassandraDatabaseNamePrefix + shuffle.String(testCassandraDatabaseNameSuffix),
+		ConnectTimeout: 30 * time.Second,
 	}
 }

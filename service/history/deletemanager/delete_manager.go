@@ -39,6 +39,8 @@ import (
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/persistence"
+	"go.temporal.io/server/common/persistence/visibility/manager"
+	"go.temporal.io/server/common/persistence/visibility/store/standard/cassandra"
 	"go.temporal.io/server/common/primitives"
 	"go.temporal.io/server/common/searchattribute"
 	"go.temporal.io/server/service/history/configs"
@@ -79,12 +81,13 @@ type (
 	}
 
 	DeleteManagerImpl struct {
-		shard          shard.Context
-		workflowCache  wcache.Cache
-		config         *configs.Config
-		metricsHandler metrics.Handler
-		archivalClient archiver.Client
-		timeSource     clock.TimeSource
+		shard             shard.Context
+		workflowCache     wcache.Cache
+		config            *configs.Config
+		metricsHandler    metrics.Handler
+		archivalClient    archiver.Client
+		timeSource        clock.TimeSource
+		visibilityManager manager.VisibilityManager
 	}
 )
 
@@ -96,14 +99,16 @@ func NewDeleteManager(
 	config *configs.Config,
 	archiverClient archiver.Client,
 	timeSource clock.TimeSource,
+	visibilityManager manager.VisibilityManager,
 ) *DeleteManagerImpl {
 	deleteManager := &DeleteManagerImpl{
-		shard:          shard,
-		workflowCache:  cache,
-		metricsHandler: shard.GetMetricsHandler(),
-		config:         config,
-		archivalClient: archiverClient,
-		timeSource:     timeSource,
+		shard:             shard,
+		workflowCache:     cache,
+		metricsHandler:    shard.GetMetricsHandler(),
+		config:            config,
+		archivalClient:    archiverClient,
+		timeSource:        timeSource,
+		visibilityManager: visibilityManager,
 	}
 
 	return deleteManager
@@ -206,15 +211,17 @@ func (m *DeleteManagerImpl) deleteWorkflowExecutionInternal(
 	// TODO (alex): Remove them when cassandra standard visibility is removed.
 	var startTime *time.Time
 	var closeTime *time.Time
-	// There are cases when workflow execution is closed but visibility is not updated and still open.
-	// This happens, for example, when workflow execution is deleted right from CloseExecutionTask.
-	// Therefore, force to delete from open visibility regardless of execution state.
-	if forceDeleteFromOpenVisibility || ms.GetExecutionState().State != enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED {
-		startTime = ms.GetExecutionInfo().GetStartTime()
-	} else {
-		closeTime, err = ms.GetWorkflowCloseTime(ctx)
-		if err != nil {
-			return err
+	if m.visibilityManager.HasStoreName(cassandra.CassandraPersistenceName) {
+		// There are cases when workflow execution is closed but visibility is not updated and still open.
+		// This happens, for example, when workflow execution is deleted right from CloseExecutionTask.
+		// Therefore, force to delete from open visibility regardless of execution state.
+		if forceDeleteFromOpenVisibility || ms.GetExecutionState().State != enumsspb.WORKFLOW_EXECUTION_STATE_COMPLETED {
+			startTime = ms.GetExecutionInfo().GetStartTime()
+		} else {
+			closeTime, err = ms.GetWorkflowCloseTime(ctx)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -308,7 +315,7 @@ func (m *DeleteManagerImpl) archiveWorkflowIfEnabled(
 		req.AttemptArchiveInline = true
 	}
 
-	saTypeMap, err := m.shard.GetSearchAttributesProvider().GetSearchAttributes(m.config.DefaultVisibilityIndexName, false)
+	saTypeMap, err := m.shard.GetSearchAttributesProvider().GetSearchAttributes(m.visibilityManager.GetIndexName(), false)
 	if err != nil {
 		return false, err
 	}
@@ -316,7 +323,7 @@ func (m *DeleteManagerImpl) archiveWorkflowIfEnabled(
 	// and it might not have access to typeMap (i.e. type needs to be embedded).
 	searchattribute.ApplyTypeMap(req.ArchiveRequest.SearchAttributes, saTypeMap)
 
-	ctx, cancel := context.WithTimeout(context.Background(), m.config.TimerProcessorArchivalTimeLimit())
+	ctx, cancel := context.WithTimeout(ctx, m.config.TimerProcessorArchivalTimeLimit())
 	defer cancel()
 	resp, err := m.archivalClient.Archive(ctx, req)
 	if err != nil {

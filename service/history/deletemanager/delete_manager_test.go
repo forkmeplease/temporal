@@ -46,6 +46,8 @@ import (
 	"go.temporal.io/server/common/definition"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
+	"go.temporal.io/server/common/persistence/visibility/manager"
+	"go.temporal.io/server/common/persistence/visibility/store/standard/cassandra"
 	"go.temporal.io/server/common/primitives"
 	"go.temporal.io/server/common/searchattribute"
 	"go.temporal.io/server/service/history/shard"
@@ -68,6 +70,7 @@ type (
 		mockClock             *clock.EventTimeSource
 		mockNamespaceRegistry *namespace.MockRegistry
 		mockMetadata          *cluster.MockMetadata
+		mockVisibilityManager *manager.MockVisibilityManager
 
 		deleteManager DeleteManager
 	}
@@ -95,6 +98,8 @@ func (s *deleteManagerWorkflowSuite) SetupTest() {
 	s.mockClock = clock.NewEventTimeSource()
 	s.mockNamespaceRegistry = namespace.NewMockRegistry(s.controller)
 	s.mockMetadata = cluster.NewMockMetadata(s.controller)
+	s.mockVisibilityManager = manager.NewMockVisibilityManager(s.controller)
+	s.mockVisibilityManager.EXPECT().GetIndexName().Return("").AnyTimes()
 
 	config := tests.NewDynamicConfig()
 	s.mockShardContext = shard.NewMockContext(s.controller)
@@ -108,6 +113,7 @@ func (s *deleteManagerWorkflowSuite) SetupTest() {
 		config,
 		s.mockArchivalClient,
 		s.mockClock,
+		s.mockVisibilityManager,
 	)
 }
 
@@ -117,6 +123,7 @@ func (s *deleteManagerWorkflowSuite) TestDeleteDeletedWorkflowExecution() {
 		RunId:      tests.RunID,
 	}
 
+	s.mockVisibilityManager.EXPECT().HasStoreName(cassandra.CassandraPersistenceName).Return(true)
 	mockWeCtx := workflow.NewMockContext(s.controller)
 	mockMutableState := workflow.NewMockMutableState(s.controller)
 	mockMutableState.EXPECT().GetCurrentBranchToken().Return([]byte{22, 8, 78}, nil)
@@ -162,6 +169,7 @@ func (s *deleteManagerWorkflowSuite) TestDeleteDeletedWorkflowExecution_Error() 
 		RunId:      tests.RunID,
 	}
 
+	s.mockVisibilityManager.EXPECT().HasStoreName(cassandra.CassandraPersistenceName).Return(true)
 	mockWeCtx := workflow.NewMockContext(s.controller)
 	mockMutableState := workflow.NewMockMutableState(s.controller)
 	mockMutableState.EXPECT().GetCurrentBranchToken().Return([]byte{22, 8, 78}, nil)
@@ -207,6 +215,7 @@ func (s *deleteManagerWorkflowSuite) TestDeleteWorkflowExecution_OpenWorkflow() 
 	}
 	now := time.Now()
 
+	s.mockVisibilityManager.EXPECT().HasStoreName(cassandra.CassandraPersistenceName).Return(true)
 	mockWeCtx := workflow.NewMockContext(s.controller)
 	mockMutableState := workflow.NewMockMutableState(s.controller)
 	closeExecutionVisibilityTaskID := int64(39)
@@ -252,6 +261,7 @@ func (s *deleteManagerWorkflowSuite) TestDeleteWorkflowExecutionRetention_Archiv
 				RunId:      tests.RunID,
 			}
 
+			s.mockVisibilityManager.EXPECT().HasStoreName(cassandra.CassandraPersistenceName).Return(true)
 			mockWeCtx := workflow.NewMockContext(s.controller)
 			mockMutableState := workflow.NewMockMutableState(s.controller)
 
@@ -327,6 +337,7 @@ func (s *deleteManagerWorkflowSuite) TestDeleteWorkflowExecutionRetention_Archiv
 				RunId:      tests.RunID,
 			}
 
+			s.mockVisibilityManager.EXPECT().HasStoreName(cassandra.CassandraPersistenceName).Return(true)
 			mockWeCtx := workflow.NewMockContext(s.controller)
 			mockMutableState := workflow.NewMockMutableState(s.controller)
 			branchToken := []byte{22, 8, 78}

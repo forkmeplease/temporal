@@ -27,12 +27,10 @@
 package queues
 
 import (
-	"time"
-
-	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/clock"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/quotas"
@@ -55,13 +53,13 @@ type (
 	// be called on all executables that have been successfully submited.
 	// Reschedule() will only be called after the Scheduler has been stopped
 	Scheduler interface {
-		common.Daemon
-
 		Submit(Executable)
 		TrySubmit(Executable) bool
 
 		TaskChannelKeyFn() TaskChannelKeyFn
 		ChannelWeightFn() ChannelWeightFn
+		Start()
+		Stop()
 	}
 
 	TaskChannelKey struct {
@@ -77,14 +75,16 @@ type (
 		ActiveNamespaceWeights      dynamicconfig.MapPropertyFnWithNamespaceFilter
 		StandbyNamespaceWeights     dynamicconfig.MapPropertyFnWithNamespaceFilter
 		EnableRateLimiter           dynamicconfig.BoolPropertyFn
-		MaxDispatchThrottleDuration time.Duration
+		EnableRateLimiterShadowMode dynamicconfig.BoolPropertyFn
+		DispatchThrottleDuration    dynamicconfig.DurationPropertyFn
 	}
 
 	PrioritySchedulerOptions struct {
 		WorkerCount                 dynamicconfig.IntPropertyFn
 		Weight                      dynamicconfig.MapPropertyFn
 		EnableRateLimiter           dynamicconfig.BoolPropertyFn
-		MaxDispatchThrottleDuration time.Duration
+		EnableRateLimiterShadowMode dynamicconfig.BoolPropertyFn
+		DispatchThrottleDuration    dynamicconfig.DurationPropertyFn
 	}
 
 	schedulerImpl struct {
@@ -114,14 +114,25 @@ func NewNamespacePriorityScheduler(
 	}
 	channelWeightFn := func(key TaskChannelKey) int {
 		namespaceWeights := options.ActiveNamespaceWeights
+		namespaceName := namespace.EmptyName
 
-		namespace, _ := namespaceRegistry.GetNamespaceByID(namespace.ID(key.NamespaceID))
-		if !namespace.ActiveInCluster(currentClusterName) {
-			namespaceWeights = options.StandbyNamespaceWeights
+		ns, err := namespaceRegistry.GetNamespaceByID(namespace.ID(key.NamespaceID))
+		if err == nil {
+			namespaceName = ns.Name()
+			if !ns.ActiveInCluster(currentClusterName) {
+				namespaceWeights = options.StandbyNamespaceWeights
+			}
+		} else {
+			// if namespace not found, treat it as active namespace and
+			// use default active namespace weight
+			logger.Warn("Unable to find namespace, using active namespace task channel weight",
+				tag.WorkflowNamespaceID(key.NamespaceID),
+				tag.Error(err),
+			)
 		}
 
 		return configs.ConvertDynamicConfigValueToWeights(
-			namespaceWeights(namespace.Name().String()),
+			namespaceWeights(namespaceName.String()),
 			logger,
 		)[key.Priority]
 	}
@@ -131,7 +142,14 @@ func NewNamespacePriorityScheduler(
 		if err != nil {
 			namespaceName = namespace.EmptyName
 		}
-		return quotas.NewRequest("", taskSchedulerToken, namespaceName.String(), tasks.PriorityName[key.Priority], "")
+		return quotas.NewRequest("", taskSchedulerToken, namespaceName.String(), tasks.PriorityName[key.Priority], 0, "")
+	}
+	taskChannelMetricsTagsFn := func(key TaskChannelKey) []metrics.Tag {
+		namespaceName, _ := namespaceRegistry.GetNamespaceName(namespace.ID(key.NamespaceID))
+		return []metrics.Tag{
+			metrics.NamespaceTag(string(namespaceName)),
+			metrics.TaskPriorityTag(key.Priority.String()),
+		}
 	}
 	fifoSchedulerOptions := &tasks.FIFOSchedulerOptions{
 		QueueSize:   prioritySchedulerProcessorQueueSize,
@@ -145,23 +163,19 @@ func NewNamespacePriorityScheduler(
 				ChannelWeightFn:             channelWeightFn,
 				ChannelWeightUpdateCh:       channelWeightUpdateCh,
 				ChannelQuotaRequestFn:       channelQuotaRequestFn,
+				TaskChannelMetricTagsFn:     taskChannelMetricsTagsFn,
 				EnableRateLimiter:           options.EnableRateLimiter,
-				MaxDispatchThrottleDuration: options.MaxDispatchThrottleDuration,
+				EnableRateLimiterShadowMode: options.EnableRateLimiterShadowMode,
+				DispatchThrottleDuration:    options.DispatchThrottleDuration,
 			},
 			tasks.Scheduler[Executable](tasks.NewFIFOScheduler[Executable](
-				newSchedulerMonitor(
-					taskChannelKeyFn,
-					namespaceRegistry,
-					timeSource,
-					metricsHandler,
-					defaultSchedulerMonitorOptions,
-				),
 				fifoSchedulerOptions,
 				logger,
 			)),
 			rateLimiter,
 			timeSource,
 			logger,
+			metricsHandler,
 		),
 		namespaceRegistry:     namespaceRegistry,
 		taskChannelKeyFn:      taskChannelKeyFn,
@@ -177,6 +191,7 @@ func NewPriorityScheduler(
 	rateLimiter SchedulerRateLimiter,
 	timeSource clock.TimeSource,
 	logger log.Logger,
+	metricsHandler metrics.Handler,
 ) Scheduler {
 	taskChannelKeyFn := func(e Executable) TaskChannelKey {
 		return TaskChannelKey{
@@ -195,7 +210,13 @@ func NewPriorityScheduler(
 		return weight[key.Priority]
 	}
 	channelQuotaRequestFn := func(key TaskChannelKey) quotas.Request {
-		return quotas.NewRequest("", taskSchedulerToken, "", tasks.PriorityName[key.Priority], "")
+		return quotas.NewRequest("", taskSchedulerToken, "", tasks.PriorityName[key.Priority], 0, "")
+	}
+	taskChannelMetricsTagsFn := func(key TaskChannelKey) []metrics.Tag {
+		return []metrics.Tag{
+			metrics.NamespaceUnknownTag(),
+			metrics.TaskPriorityTag(key.Priority.String()),
+		}
 	}
 	fifoSchedulerOptions := &tasks.FIFOSchedulerOptions{
 		QueueSize:   prioritySchedulerProcessorQueueSize,
@@ -209,17 +230,19 @@ func NewPriorityScheduler(
 				ChannelWeightFn:             channelWeightFn,
 				ChannelWeightUpdateCh:       nil,
 				ChannelQuotaRequestFn:       channelQuotaRequestFn,
+				TaskChannelMetricTagsFn:     taskChannelMetricsTagsFn,
 				EnableRateLimiter:           options.EnableRateLimiter,
-				MaxDispatchThrottleDuration: options.MaxDispatchThrottleDuration,
+				EnableRateLimiterShadowMode: options.EnableRateLimiterShadowMode,
+				DispatchThrottleDuration:    options.DispatchThrottleDuration,
 			},
 			tasks.Scheduler[Executable](tasks.NewFIFOScheduler[Executable](
-				noopScheduleMonitor,
 				fifoSchedulerOptions,
 				logger,
 			)),
 			rateLimiter,
 			timeSource,
 			logger,
+			metricsHandler,
 		),
 		taskChannelKeyFn:      taskChannelKeyFn,
 		channelWeightFn:       channelWeightFn,
@@ -229,36 +252,19 @@ func NewPriorityScheduler(
 
 func (s *schedulerImpl) Start() {
 	if s.channelWeightUpdateCh != nil {
-		s.namespaceRegistry.RegisterNamespaceChangeCallback(
-			s,
-			0,
-			func() {}, // no-op
-			func(oldNamespaces, newNamespaces []*namespace.Namespace) {
-				namespaceFailover := false
-				for idx := range oldNamespaces {
-					if oldNamespaces[idx].FailoverVersion() != newNamespaces[idx].FailoverVersion() {
-						namespaceFailover = true
-						break
-					}
-				}
-
-				if !namespaceFailover {
-					return
-				}
-
-				select {
-				case s.channelWeightUpdateCh <- struct{}{}:
-				default:
-				}
-			},
-		)
+		s.namespaceRegistry.RegisterStateChangeCallback(s, func(ns *namespace.Namespace, deletedFromDb bool) {
+			select {
+			case s.channelWeightUpdateCh <- struct{}{}:
+			default:
+			}
+		})
 	}
 	s.Scheduler.Start()
 }
 
 func (s *schedulerImpl) Stop() {
 	if s.channelWeightUpdateCh != nil {
-		s.namespaceRegistry.UnregisterNamespaceChangeCallback(s)
+		s.namespaceRegistry.UnregisterStateChangeCallback(s)
 
 		// note we can't close the channelWeightUpdateCh here
 		// as callback may still be triggered even after unregister returns

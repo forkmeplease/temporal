@@ -28,14 +28,19 @@ import (
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
+	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/metrics"
+	"go.temporal.io/server/common/persistence/sql/sqlplugin/mysql"
+	"go.temporal.io/server/common/persistence/sql/sqlplugin/postgresql"
+	"go.temporal.io/server/common/persistence/sql/sqlplugin/sqlite"
 	"go.temporal.io/server/common/persistence/visibility/manager"
 	"go.temporal.io/server/common/persistence/visibility/store"
 	"go.temporal.io/server/common/persistence/visibility/store/elasticsearch"
 	esclient "go.temporal.io/server/common/persistence/visibility/store/elasticsearch/client"
+	"go.temporal.io/server/common/persistence/visibility/store/sql"
 	"go.temporal.io/server/common/persistence/visibility/store/standard"
 	"go.temporal.io/server/common/persistence/visibility/store/standard/cassandra"
-	"go.temporal.io/server/common/persistence/visibility/store/standard/sql"
+	standardSql "go.temporal.io/server/common/persistence/visibility/store/standard/sql"
 	"go.temporal.io/server/common/resolver"
 	"go.temporal.io/server/common/searchattribute"
 )
@@ -44,63 +49,60 @@ func NewManager(
 	persistenceCfg config.Persistence,
 	persistenceResolver resolver.ServiceResolver,
 
-	defaultIndexName string,
-	secondaryVisibilityIndexName string,
 	esClient esclient.Client,
 	esProcessorConfig *elasticsearch.ProcessorConfig,
 	searchAttributesProvider searchattribute.Provider,
-	searchAttributesMapper searchattribute.Mapper,
+	searchAttributesMapperProvider searchattribute.MapperProvider,
 
-	standardVisibilityPersistenceMaxReadQPS dynamicconfig.IntPropertyFn,
-	standardVisibilityPersistenceMaxWriteQPS dynamicconfig.IntPropertyFn,
-	advancedVisibilityPersistenceMaxReadQPS dynamicconfig.IntPropertyFn,
-	advancedVisibilityPersistenceMaxWriteQPS dynamicconfig.IntPropertyFn,
-	enableAdvancedVisibilityRead dynamicconfig.BoolPropertyFnWithNamespaceFilter,
-	advancedVisibilityWritingMode dynamicconfig.StringPropertyFn,
-	enableReadFromSecondaryAdvancedVisibility dynamicconfig.BoolPropertyFnWithNamespaceFilter,
-	enableWriteToSecondaryAdvancedVisibility dynamicconfig.BoolPropertyFn,
-	visibilityDisableOrderByClause dynamicconfig.BoolPropertyFn,
+	maxReadQPS dynamicconfig.IntPropertyFn,
+	maxWriteQPS dynamicconfig.IntPropertyFn,
+	operatorRPSRatio dynamicconfig.FloatPropertyFn,
+	enableReadFromSecondaryVisibility dynamicconfig.BoolPropertyFnWithNamespaceFilter,
+	secondaryVisibilityWritingMode dynamicconfig.StringPropertyFn,
+	visibilityDisableOrderByClause dynamicconfig.BoolPropertyFnWithNamespaceFilter,
+	visibilityEnableManualPagination dynamicconfig.BoolPropertyFnWithNamespaceFilter,
 
 	metricsHandler metrics.Handler,
 	logger log.Logger,
 ) (manager.VisibilityManager, error) {
-	stdVisibilityManager, err := NewStandardManager(
-		persistenceCfg,
+	// Log configuration
+	logger.Info("loading new manager with the configuration: ", tag.Key("VisibilityStoreConfig"), tag.Value(persistenceCfg.GetVisibilityStoreConfig()))
+
+	visibilityManager, err := newVisibilityManagerFromDataStoreConfig(
+		persistenceCfg.GetVisibilityStoreConfig(),
 		persistenceResolver,
-		standardVisibilityPersistenceMaxReadQPS,
-		standardVisibilityPersistenceMaxWriteQPS,
-		metricsHandler,
-		logger,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	advVisibilityManager, err := NewAdvancedManager(
-		defaultIndexName,
 		esClient,
 		esProcessorConfig,
 		searchAttributesProvider,
-		searchAttributesMapper,
-		advancedVisibilityPersistenceMaxReadQPS,
-		advancedVisibilityPersistenceMaxWriteQPS,
+		searchAttributesMapperProvider,
+		maxReadQPS,
+		maxWriteQPS,
+		operatorRPSRatio,
 		visibilityDisableOrderByClause,
+		visibilityEnableManualPagination,
 		metricsHandler,
 		logger,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if visibilityManager == nil {
+		logger.Fatal("invalid config: visibility store must be configured")
+		return nil, nil
+	}
 
-	secondaryVisibilityManager, err := NewAdvancedManager(
-		secondaryVisibilityIndexName,
+	secondaryVisibilityManager, err := newVisibilityManagerFromDataStoreConfig(
+		persistenceCfg.GetSecondaryVisibilityStoreConfig(),
+		persistenceResolver,
 		esClient,
 		esProcessorConfig,
 		searchAttributesProvider,
-		searchAttributesMapper,
-		advancedVisibilityPersistenceMaxReadQPS,
-		advancedVisibilityPersistenceMaxWriteQPS,
+		searchAttributesMapperProvider,
+		maxReadQPS,
+		maxWriteQPS,
+		operatorRPSRatio,
 		visibilityDisableOrderByClause,
+		visibilityEnableManualPagination,
 		metricsHandler,
 		logger,
 	)
@@ -108,189 +110,205 @@ func NewManager(
 		return nil, err
 	}
 
-	if stdVisibilityManager == nil && advVisibilityManager == nil {
-		logger.Fatal("invalid config: one of standard or advanced visibility must be configured")
-		return nil, nil
-	}
-
-	if stdVisibilityManager != nil && secondaryVisibilityManager != nil {
-		logger.Fatal("invalid config: secondary visibility store cannot be used with standard visibility")
-		return nil, nil
-	}
-
-	if stdVisibilityManager != nil && advVisibilityManager == nil {
-		return stdVisibilityManager, nil
-	}
-
-	if stdVisibilityManager == nil && advVisibilityManager != nil {
-		if secondaryVisibilityManager == nil {
-			return advVisibilityManager, nil
+	if secondaryVisibilityManager != nil {
+		isPrimaryAdvancedSQL := false
+		isSecondaryAdvancedSQL := false
+		switch visibilityManager.GetStoreNames()[0] {
+		case mysql.PluginNameV8, postgresql.PluginNameV12, sqlite.PluginName:
+			isPrimaryAdvancedSQL = true
+		}
+		switch secondaryVisibilityManager.GetStoreNames()[0] {
+		case mysql.PluginNameV8, postgresql.PluginNameV12, sqlite.PluginName:
+			isSecondaryAdvancedSQL = true
+		}
+		if isPrimaryAdvancedSQL && !isSecondaryAdvancedSQL {
+			logger.Fatal("invalid config: dual visibility combination not supported")
+			return nil, nil
 		}
 
-		// Dual write to primary and secondary ES indices.
-		managerSelector := NewESManagerSelector(
-			advVisibilityManager,
+		managerSelector := newDefaultManagerSelector(
+			visibilityManager,
 			secondaryVisibilityManager,
-			enableReadFromSecondaryAdvancedVisibility,
-			enableWriteToSecondaryAdvancedVisibility)
-
+			enableReadFromSecondaryVisibility,
+			secondaryVisibilityWritingMode,
+		)
 		return NewVisibilityManagerDual(
-			advVisibilityManager,
+			visibilityManager,
 			secondaryVisibilityManager,
 			managerSelector,
 		), nil
 	}
 
-	// Dual write to standard and advanced visibility.
-	managerSelector := NewSQLToESManagerSelector(
-		stdVisibilityManager,
-		advVisibilityManager,
-		enableAdvancedVisibilityRead,
-		advancedVisibilityWritingMode)
-	return NewVisibilityManagerDual(
-		stdVisibilityManager,
-		advVisibilityManager,
-		managerSelector,
-	), nil
+	return visibilityManager, nil
 }
 
-func NewStandardManager(
-	persistenceCfg config.Persistence,
+func newVisibilityManager(
+	visStore store.VisibilityStore,
+	maxReadQPS dynamicconfig.IntPropertyFn,
+	maxWriteQPS dynamicconfig.IntPropertyFn,
+	operatorRPSRatio dynamicconfig.FloatPropertyFn,
+	metricsHandler metrics.Handler,
+	tag metrics.Tag,
+	logger log.Logger,
+) manager.VisibilityManager {
+	if visStore == nil {
+		return nil
+	}
+	var visManager manager.VisibilityManager = newVisibilityManagerImpl(visStore, logger)
+
+	// wrap with rate limiter
+	visManager = NewVisibilityManagerRateLimited(
+		visManager,
+		maxReadQPS,
+		maxWriteQPS,
+		operatorRPSRatio)
+	// wrap with metrics client
+	visManager = NewVisibilityManagerMetrics(
+		visManager,
+		metricsHandler,
+		logger,
+		tag)
+
+	return visManager
+}
+
+//nolint:revive // too many arguments
+func newVisibilityManagerFromDataStoreConfig(
+	dsConfig config.DataStore,
 	persistenceResolver resolver.ServiceResolver,
 
-	standardVisibilityPersistenceMaxReadQPS dynamicconfig.IntPropertyFn,
-	standardVisibilityPersistenceMaxWriteQPS dynamicconfig.IntPropertyFn,
-
-	metricsHandler metrics.Handler,
-	logger log.Logger,
-) (manager.VisibilityManager, error) {
-
-	stdVisibilityStore, err := newStandardVisibilityStore(
-		persistenceCfg,
-		persistenceResolver,
-		logger)
-	if err != nil {
-		return nil, err
-	}
-
-	return newVisibilityManager(
-		stdVisibilityStore,
-		standardVisibilityPersistenceMaxReadQPS,
-		standardVisibilityPersistenceMaxWriteQPS,
-		metricsHandler,
-		metrics.StandardVisibilityTypeTag(),
-		logger), nil
-}
-
-func NewAdvancedManager(
-	defaultIndexName string,
 	esClient esclient.Client,
 	esProcessorConfig *elasticsearch.ProcessorConfig,
 	searchAttributesProvider searchattribute.Provider,
-	searchAttributesMapper searchattribute.Mapper,
+	searchAttributesMapperProvider searchattribute.MapperProvider,
 
-	advancedVisibilityPersistenceMaxReadQPS dynamicconfig.IntPropertyFn,
-	advancedVisibilityPersistenceMaxWriteQPS dynamicconfig.IntPropertyFn,
-	visibilityDisableOrderByClause dynamicconfig.BoolPropertyFn,
+	maxReadQPS dynamicconfig.IntPropertyFn,
+	maxWriteQPS dynamicconfig.IntPropertyFn,
+	operatorRPSRatio dynamicconfig.FloatPropertyFn,
+	visibilityDisableOrderByClause dynamicconfig.BoolPropertyFnWithNamespaceFilter,
+	visibilityEnableManualPagination dynamicconfig.BoolPropertyFnWithNamespaceFilter,
 
 	metricsHandler metrics.Handler,
 	logger log.Logger,
 ) (manager.VisibilityManager, error) {
-	if defaultIndexName == "" {
-		return nil, nil
-	}
-
-	advVisibilityStore := newAdvancedVisibilityStore(
-		defaultIndexName,
+	visStore, err := newVisibilityStoreFromDataStoreConfig(
+		dsConfig,
+		persistenceResolver,
 		esClient,
 		esProcessorConfig,
 		searchAttributesProvider,
-		searchAttributesMapper,
+		searchAttributesMapperProvider,
 		visibilityDisableOrderByClause,
+		visibilityEnableManualPagination,
 		metricsHandler,
-		logger)
-
+		logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if visStore == nil {
+		return nil, nil
+	}
 	return newVisibilityManager(
-		advVisibilityStore,
-		advancedVisibilityPersistenceMaxReadQPS,
-		advancedVisibilityPersistenceMaxWriteQPS,
+		visStore,
+		maxReadQPS,
+		maxWriteQPS,
+		operatorRPSRatio,
 		metricsHandler,
 		metrics.AdvancedVisibilityTypeTag(),
 		logger,
 	), nil
 }
 
-func newVisibilityManager(
-	store store.VisibilityStore,
-	maxReadQPS dynamicconfig.IntPropertyFn,
-	maxWriteQPS dynamicconfig.IntPropertyFn,
+func newVisibilityStoreFromDataStoreConfig(
+	dsConfig config.DataStore,
+	persistenceResolver resolver.ServiceResolver,
+
+	esClient esclient.Client,
+	esProcessorConfig *elasticsearch.ProcessorConfig,
+	searchAttributesProvider searchattribute.Provider,
+	searchAttributesMapperProvider searchattribute.MapperProvider,
+	visibilityDisableOrderByClause dynamicconfig.BoolPropertyFnWithNamespaceFilter,
+	visibilityEnableManualPagination dynamicconfig.BoolPropertyFnWithNamespaceFilter,
+
 	metricsHandler metrics.Handler,
-	tag metrics.Tag,
 	logger log.Logger,
-) manager.VisibilityManager {
-	if store == nil {
-		return nil
+) (store.VisibilityStore, error) {
+	var (
+		visStore store.VisibilityStore
+		err      error
+	)
+	if dsConfig.SQL != nil {
+		switch dsConfig.SQL.PluginName {
+		case mysql.PluginNameV8, postgresql.PluginNameV12, sqlite.PluginName:
+			visStore, err = sql.NewSQLVisibilityStore(
+				*dsConfig.SQL,
+				persistenceResolver,
+				searchAttributesProvider,
+				searchAttributesMapperProvider,
+				logger,
+			)
+		default:
+			visStore, err = newStandardVisibilityStore(dsConfig, persistenceResolver, logger)
+		}
+	} else if dsConfig.Cassandra != nil {
+		visStore, err = newStandardVisibilityStore(dsConfig, persistenceResolver, logger)
+	} else if dsConfig.Elasticsearch != nil {
+		visStore = newElasticsearchVisibilityStore(
+			dsConfig.Elasticsearch.GetVisibilityIndex(),
+			esClient,
+			esProcessorConfig,
+			searchAttributesProvider,
+			searchAttributesMapperProvider,
+			visibilityDisableOrderByClause,
+			visibilityEnableManualPagination,
+			metricsHandler,
+			logger,
+		)
 	}
-
-	var manager manager.VisibilityManager = newVisibilityManagerImpl(store, logger)
-
-	// wrap with rate limiter
-	manager = NewVisibilityManagerRateLimited(
-		manager,
-		maxReadQPS,
-		maxWriteQPS)
-	// wrap with metrics client
-	manager = NewVisibilityManagerMetrics(
-		manager,
-		metricsHandler,
-		logger,
-		tag)
-
-	return manager
+	return visStore, err
 }
 
 func newStandardVisibilityStore(
-	persistenceCfg config.Persistence,
+	dsConfig config.DataStore,
 	persistenceResolver resolver.ServiceResolver,
 	logger log.Logger,
 ) (store.VisibilityStore, error) {
-	// If standard visibility is not configured.
-	if persistenceCfg.VisibilityStore == "" {
-		return nil, nil
-	}
-
-	visibilityStoreCfg := persistenceCfg.DataStores[persistenceCfg.VisibilityStore]
-
 	var (
-		store store.VisibilityStore
-		err   error
+		visStore store.VisibilityStore
+		err      error
 	)
-	switch {
-	case visibilityStoreCfg.Cassandra != nil:
-		store, err = cassandra.NewVisibilityStore(*visibilityStoreCfg.Cassandra, persistenceResolver, logger)
-	case visibilityStoreCfg.SQL != nil:
-		store, err = sql.NewSQLVisibilityStore(*visibilityStoreCfg.SQL, persistenceResolver, logger)
+	if dsConfig.Cassandra != nil {
+		visStore, err = cassandra.NewVisibilityStore(
+			*dsConfig.Cassandra,
+			persistenceResolver,
+			logger,
+		)
+	} else if dsConfig.SQL != nil {
+		visStore, err = standardSql.NewSQLVisibilityStore(
+			*dsConfig.SQL,
+			persistenceResolver,
+			logger,
+		)
 	}
-
 	if err != nil {
 		return nil, err
 	}
-
-	if store == nil {
+	if visStore == nil {
 		logger.Fatal("invalid config: one of cassandra or sql params must be specified for visibility store")
 		return nil, nil
 	}
-
-	return standard.NewVisibilityStore(store), nil
+	return standard.NewVisibilityStore(visStore), nil
 }
 
-func newAdvancedVisibilityStore(
+func newElasticsearchVisibilityStore(
 	defaultIndexName string,
 	esClient esclient.Client,
 	esProcessorConfig *elasticsearch.ProcessorConfig,
 	searchAttributesProvider searchattribute.Provider,
-	searchAttributesMapper searchattribute.Mapper,
-	visibilityDisableOrderByClause dynamicconfig.BoolPropertyFn,
+	searchAttributesMapperProvider searchattribute.MapperProvider,
+	visibilityDisableOrderByClause dynamicconfig.BoolPropertyFnWithNamespaceFilter,
+	visibilityEnableManualPagination dynamicconfig.BoolPropertyFnWithNamespaceFilter,
 	metricsHandler metrics.Handler,
 	logger log.Logger,
 ) store.VisibilityStore {
@@ -311,10 +329,11 @@ func newAdvancedVisibilityStore(
 		esClient,
 		defaultIndexName,
 		searchAttributesProvider,
-		searchAttributesMapper,
+		searchAttributesMapperProvider,
 		esProcessor,
 		esProcessorAckTimeout,
 		visibilityDisableOrderByClause,
+		visibilityEnableManualPagination,
 		metricsHandler)
 	return s
 }

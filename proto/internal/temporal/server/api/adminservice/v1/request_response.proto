@@ -200,6 +200,7 @@ message AddSearchAttributesRequest {
     map<string, temporal.api.enums.v1.IndexedValueType> search_attributes = 1;
     string index_name = 2;
     bool skip_schema_update = 3;
+    string namespace = 4;
 }
 
 message AddSearchAttributesResponse {
@@ -208,6 +209,7 @@ message AddSearchAttributesResponse {
 message RemoveSearchAttributesRequest {
     repeated string search_attributes = 1;
     string index_name = 2;
+    string namespace = 3;
 }
 
 message RemoveSearchAttributesResponse {
@@ -215,6 +217,7 @@ message RemoveSearchAttributesResponse {
 
 message GetSearchAttributesRequest {
     string index_name = 1;
+    string namespace = 2;
 }
 
 message GetSearchAttributesResponse {
@@ -242,6 +245,7 @@ message DescribeClusterResponse {
     int64 failover_version_increment = 10;
     int64 initial_failover_version = 11;
     bool is_global_namespace_enabled = 12;
+    map<string,string> tags = 13;
 }
 
 message ListClustersRequest {
@@ -301,6 +305,7 @@ message GetDLQMessagesResponse {
     temporal.server.api.enums.v1.DeadLetterQueueType type = 1;
     repeated temporal.server.api.replication.v1.ReplicationTask replication_tasks = 2;
     bytes next_page_token = 3;
+    repeated temporal.server.api.replication.v1.ReplicationTaskInfo replication_tasks_info = 4;
 }
 
 message PurgeDLQMessagesRequest {
@@ -371,4 +376,16 @@ message DeleteWorkflowExecutionRequest {
 
 message DeleteWorkflowExecutionResponse {
     repeated string warnings = 1;
+}
+
+message StreamWorkflowReplicationMessagesRequest {
+    oneof attributes {
+        temporal.server.api.replication.v1.SyncReplicationState sync_replication_state = 1;
+    }
+}
+
+message StreamWorkflowReplicationMessagesResponse {
+    oneof attributes {
+        temporal.server.api.replication.v1.WorkflowReplicationMessages messages = 1;
+    }
 }

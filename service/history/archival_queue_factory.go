@@ -27,6 +27,7 @@ package history
 import (
 	"go.uber.org/fx"
 
+	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/log/tag"
 	"go.temporal.io/server/common/metrics"
@@ -95,14 +96,14 @@ func newScheduler(params ArchivalQueueFactoryParams) queues.Scheduler {
 		queues.PrioritySchedulerOptions{
 			WorkerCount:                 params.Config.ArchivalProcessorSchedulerWorkerCount,
 			EnableRateLimiter:           params.Config.TaskSchedulerEnableRateLimiter,
-			MaxDispatchThrottleDuration: HostSchedulerMaxDispatchThrottleDuration,
-			Weight: func() map[string]any {
-				return ArchivalTaskPriorities
-			},
+			EnableRateLimiterShadowMode: params.Config.TaskSchedulerEnableRateLimiterShadowMode,
+			DispatchThrottleDuration:    params.Config.TaskSchedulerThrottleDuration,
+			Weight:                      dynamicconfig.GetMapPropertyFn(ArchivalTaskPriorities),
 		},
 		params.SchedulerRateLimiter,
 		params.TimeSource,
 		params.Logger,
+		params.MetricsHandler.WithTags(metrics.OperationTag(metrics.OperationArchivalQueueProcessorScope)),
 	)
 }
 
@@ -112,18 +113,13 @@ func newQueueFactoryBase(params ArchivalQueueFactoryParams, hostScheduler queues
 	return QueueFactoryBase{
 		HostScheduler:        hostScheduler,
 		HostPriorityAssigner: queues.NewPriorityAssigner(),
-		HostRateLimiter: NewQueueHostRateLimiter(
-			params.Config.ArchivalProcessorMaxPollHostRPS,
-			params.Config.PersistenceMaxQPS,
-			archivalQueuePersistenceMaxRPSRatio,
-		),
 		HostReaderRateLimiter: queues.NewReaderPriorityRateLimiter(
 			NewHostRateLimiterRateFn(
 				params.Config.ArchivalProcessorMaxPollHostRPS,
 				params.Config.PersistenceMaxQPS,
 				archivalQueuePersistenceMaxRPSRatio,
 			),
-			params.Config.QueueMaxReaderCount(),
+			int64(params.Config.QueueMaxReaderCount()),
 		),
 	}
 }
@@ -134,6 +130,9 @@ func (f *archivalQueueFactory) CreateQueue(
 	workflowCache wcache.Cache,
 ) queues.Queue {
 	executor := f.newArchivalTaskExecutor(shard, workflowCache)
+	if f.ExecutorWrapper != nil {
+		executor = f.ExecutorWrapper.Wrap(executor)
+	}
 	return f.newScheduledQueue(shard, executor)
 }
 
@@ -145,17 +144,27 @@ func (f *archivalQueueFactory) newArchivalTaskExecutor(shard shard.Context, work
 		workflowCache,
 		f.RelocatableAttributesFetcher,
 		f.MetricsHandler,
-		f.Logger,
+		log.With(shard.GetLogger(), tag.ComponentArchivalQueue),
 	)
 }
 
 // newScheduledQueue creates a new scheduled queue for the given shard with archival-specific configurations.
 func (f *archivalQueueFactory) newScheduledQueue(shard shard.Context, executor queues.Executor) queues.Queue {
 	logger := log.With(shard.GetLogger(), tag.ComponentArchivalQueue)
+	metricsHandler := f.MetricsHandler.WithTags(metrics.OperationTag(metrics.OperationArchivalQueueProcessorScope))
+
+	rescheduler := queues.NewRescheduler(
+		f.HostScheduler,
+		shard.GetTimeSource(),
+		logger,
+		metricsHandler,
+	)
+
 	return queues.NewScheduledQueue(
 		shard,
 		tasks.CategoryArchival,
 		f.HostScheduler,
+		rescheduler,
 		f.HostPriorityAssigner,
 		executor,
 		&queues.Options{
@@ -175,10 +184,9 @@ func (f *archivalQueueFactory) newScheduledQueue(shard shard.Context, executor q
 			CheckpointInterval:                  f.Config.ArchivalProcessorUpdateAckInterval,
 			CheckpointIntervalJitterCoefficient: f.Config.ArchivalProcessorUpdateAckIntervalJitterCoefficient,
 			MaxReaderCount:                      f.Config.QueueMaxReaderCount,
-			TaskMaxRetryCount:                   f.Config.ArchivalProcessorRetryWarningLimit,
 		},
 		f.HostReaderRateLimiter,
 		logger,
-		f.MetricsHandler.WithTags(metrics.OperationTag(metrics.OperationArchivalQueueProcessorScope)),
+		metricsHandler,
 	)
 }

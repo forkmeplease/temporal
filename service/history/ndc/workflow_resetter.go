@@ -35,7 +35,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
-	persistencespb "go.temporal.io/server/api/persistence/v1"
+
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/cluster"
 	"go.temporal.io/server/common/collection"
@@ -147,14 +147,10 @@ func (r *workflowResetterImpl) ResetWorkflow(
 		resetWorkflowVersion = currentMutableState.GetCurrentVersion()
 
 		currentWorkflowMutation, currentWorkflowEventsSeq, err = currentMutableState.CloseTransactionAsMutation(
-			r.shard.GetTimeSource().Now(),
 			workflow.TransactionPolicyActive,
 		)
 		if err != nil {
 			return err
-		}
-		currentWorkflowMutation.ExecutionInfo.ExecutionStats = &persistencespb.ExecutionStats{
-			HistorySize: currentWorkflow.GetContext().GetHistorySize(),
 		}
 
 		reapplyEventsFn = func(ctx context.Context, resetMutableState workflow.MutableState) error {
@@ -333,11 +329,7 @@ func (r *workflowResetterImpl) reapplyEventsToResetWorkflow(
 		panic(fmt.Sprintf("unknown reset reapply type: %v", resetReapplyType))
 	}
 
-	if err := r.reapplyEvents(resetMutableState, additionalReapplyEvents); err != nil {
-		return err
-	}
-
-	return nil
+	return r.reapplyEvents(resetMutableState, additionalReapplyEvents)
 }
 
 func (r *workflowResetterImpl) persistToDB(
@@ -348,32 +340,25 @@ func (r *workflowResetterImpl) persistToDB(
 	resetWorkflow Workflow,
 ) error {
 
-	now := r.shard.GetTimeSource().Now()
 	resetWorkflowSnapshot, resetWorkflowEventsSeq, err := resetWorkflow.GetMutableState().CloseTransactionAsSnapshot(
-		now,
 		workflow.TransactionPolicyActive,
 	)
 	if err != nil {
 		return err
 	}
-	resetWorkflowSnapshot.ExecutionInfo.ExecutionStats = &persistencespb.ExecutionStats{
-		HistorySize: resetWorkflow.GetContext().GetHistorySize(),
-	}
 
 	if currentWorkflowMutation != nil {
-		if currentWorkflowSizeDiff, resetWorkflowSizeDiff, err := r.transaction.UpdateWorkflowExecution(
+		if _, _, err := r.transaction.UpdateWorkflowExecution(
 			ctx,
 			persistence.UpdateWorkflowModeUpdateCurrent,
+			currentWorkflow.GetMutableState().GetCurrentVersion(),
 			currentWorkflowMutation,
 			currentWorkflowEventsSeq,
+			workflow.MutableStateFailoverVersion(resetWorkflow.GetMutableState()),
 			resetWorkflowSnapshot,
 			resetWorkflowEventsSeq,
-			resetWorkflow.GetMutableState().GetNamespaceEntry().ActiveClusterName(),
 		); err != nil {
 			return err
-		} else {
-			currentWorkflow.GetContext().SetHistorySize(currentWorkflow.GetContext().GetHistorySize() + currentWorkflowSizeDiff)
-			resetWorkflow.GetContext().SetHistorySize(resetWorkflow.GetContext().GetHistorySize() + resetWorkflowSizeDiff)
 		}
 		return nil
 	}
@@ -387,7 +372,6 @@ func (r *workflowResetterImpl) persistToDB(
 
 	return resetWorkflow.GetContext().CreateWorkflowExecution(
 		ctx,
-		now,
 		persistence.CreateWorkflowModeUpdateCurrent,
 		currentRunID,
 		currentLastWriteVersion,
@@ -453,7 +437,12 @@ func (r *workflowResetterImpl) replayResetWorkflow(
 		return nil, err
 	}
 
-	resetContext.SetHistorySize(resetHistorySize)
+	resetMutableState.SetBaseWorkflow(
+		baseRunID,
+		baseRebuildLastEventID,
+		baseRebuildLastEventVersion,
+	)
+	resetMutableState.AddHistorySize(resetHistorySize)
 	return NewWorkflow(
 		ctx,
 		r.namespaceRegistry,
@@ -473,9 +462,9 @@ func (r *workflowResetterImpl) failWorkflowTask(
 	resetReason string,
 ) error {
 
-	workflowTask, ok := resetMutableState.GetPendingWorkflowTask()
-	if !ok {
-		// TODO if resetMutableState.HasProcessedOrPendingWorkflowTask() == true
+	workflowTask := resetMutableState.GetPendingWorkflowTask()
+	if workflowTask == nil {
+		// TODO if resetMutableState.HadOrHasWorkflowTask() == true
 		//  meaning workflow history has NO workflow task ever
 		//  should also allow workflow reset, the only remaining issues are
 		//  * what if workflow is a cron workflow, e.g. should add a workflow task directly or still respect the cron job
@@ -499,8 +488,7 @@ func (r *workflowResetterImpl) failWorkflowTask(
 	}
 
 	_, err = resetMutableState.AddWorkflowTaskFailedEvent(
-		workflowTask.ScheduledEventID,
-		workflowTask.StartedEventID,
+		workflowTask,
 		enumspb.WORKFLOW_TASK_FAILED_CAUSE_RESET_WORKFLOW,
 		failure.NewResetWorkflowFailure(resetReason, nil),
 		consts.IdentityHistoryService,
@@ -563,6 +551,7 @@ func (r *workflowResetterImpl) forkAndGenerateBranchToken(
 		ForkNodeID:      forkNodeID,
 		Info:            persistence.BuildHistoryGarbageCleanupInfo(namespaceID.String(), workflowID, resetRunID),
 		ShardID:         shardID,
+		NamespaceID:     namespaceID.String(),
 	})
 	if err != nil {
 		return nil, err
@@ -576,10 +565,8 @@ func (r *workflowResetterImpl) terminateWorkflow(
 	terminateReason string,
 ) error {
 
-	eventBatchFirstEventID := mutableState.GetNextEventID()
 	return workflow.TerminateWorkflow(
 		mutableState,
-		eventBatchFirstEventID,
 		terminateReason,
 		nil,
 		consts.IdentityResetter,
@@ -630,7 +617,7 @@ func (r *workflowResetterImpl) reapplyContinueAsNewWorkflowEvents(
 				WorkflowId: workflowID,
 				RunId:      runID,
 			},
-			workflow.CallerTypeAPI,
+			workflow.LockPriorityHigh,
 		)
 		if err != nil {
 			return 0, nil, err
@@ -736,6 +723,7 @@ func (r *workflowResetterImpl) reapplyEvents(
 				attr.GetInput(),
 				attr.GetIdentity(),
 				attr.GetHeader(),
+				attr.GetSkipGenerateWorkflowTask(),
 			); err != nil {
 				return err
 			}

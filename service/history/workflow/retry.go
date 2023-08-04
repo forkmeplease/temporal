@@ -39,11 +39,13 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"golang.org/x/exp/slices"
 
+	"go.temporal.io/server/api/clock/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	workflowspb "go.temporal.io/server/api/workflow/v1"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/backoff"
 	"go.temporal.io/server/common/primitives/timestamp"
+	"go.temporal.io/server/common/worker_versioning"
 )
 
 // TODO treat 0 as 0, not infinite
@@ -185,7 +187,7 @@ func SetupNewWorkflowForRetryOrCron(
 		RunId:      newRunID,
 	}
 
-	firstRunID, err := previousMutableState.GetFirstRunID()
+	firstRunID, err := previousMutableState.GetFirstRunID(ctx)
 	if err != nil {
 		return err
 	}
@@ -240,6 +242,13 @@ func SetupNewWorkflowForRetryOrCron(
 		attempt = previousExecutionInfo.Attempt + 1
 	}
 
+	// For retry: propagate build-id version info to new workflow.
+	// For cron: do not propagate (always start on latest version).
+	var sourceVersionStamp *commonpb.WorkerVersionStamp
+	if initiator == enumspb.CONTINUE_AS_NEW_INITIATOR_RETRY {
+		sourceVersionStamp = worker_versioning.StampIfUsingVersioning(previousMutableState.GetWorkerVersionStamp())
+	}
+
 	req := &historyservice.StartWorkflowExecutionRequest{
 		NamespaceId:            newMutableState.GetNamespaceEntry().ID().String(),
 		StartRequest:           createRequest,
@@ -250,6 +259,7 @@ func SetupNewWorkflowForRetryOrCron(
 		// enforce minimal interval between runs to prevent tight loop continue as new spin.
 		FirstWorkflowTaskBackoff: previousMutableState.ContinueAsNewMinBackoff(&backoffInterval),
 		Attempt:                  attempt,
+		SourceVersionStamp:       sourceVersionStamp,
 	}
 	workflowTimeoutTime := timestamp.TimeValue(previousExecutionInfo.WorkflowExecutionExpirationTime)
 	if !workflowTimeoutTime.IsZero() {
@@ -266,9 +276,11 @@ func SetupNewWorkflowForRetryOrCron(
 	if err != nil {
 		return serviceerror.NewInternal("Failed to add workflow execution started event.")
 	}
-	if err = newMutableState.AddFirstWorkflowTaskScheduled(
-		event,
-	); err != nil {
+	var parentClock *clock.VectorClock
+	if parentInfo != nil {
+		parentClock = parentInfo.Clock
+	}
+	if _, err = newMutableState.AddFirstWorkflowTaskScheduled(parentClock, event, false); err != nil {
 		return err
 	}
 

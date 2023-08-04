@@ -104,6 +104,21 @@ func (mr *MockClientMockRecorder) Count(ctx, index, query interface{}) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Count", reflect.TypeOf((*MockClient)(nil).Count), ctx, index, query)
 }
 
+// CountGroupBy mocks base method.
+func (m *MockClient) CountGroupBy(ctx context.Context, index string, query v7.Query, aggName string, agg v7.Aggregation) (*v7.SearchResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountGroupBy", ctx, index, query, aggName, agg)
+	ret0, _ := ret[0].(*v7.SearchResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountGroupBy indicates an expected call of CountGroupBy.
+func (mr *MockClientMockRecorder) CountGroupBy(ctx, index, query, aggName, agg interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountGroupBy", reflect.TypeOf((*MockClient)(nil).CountGroupBy), ctx, index, query, aggName, agg)
+}
+
 // Get mocks base method.
 func (m *MockClient) Get(ctx context.Context, index, docID string) (*v7.GetResult, error) {
 	m.ctrl.T.Helper()
@@ -209,18 +224,18 @@ func (mr *MockClientMockRecorder) RunBulkProcessor(ctx, p interface{}) *gomock.C
 }
 
 // Scroll mocks base method.
-func (m *MockClient) Scroll(ctx context.Context, scrollID, keepAliveInterval string) (*v7.SearchResult, error) {
+func (m *MockClient) Scroll(ctx context.Context, id, keepAliveInterval string) (*v7.SearchResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Scroll", ctx, scrollID, keepAliveInterval)
+	ret := m.ctrl.Call(m, "Scroll", ctx, id, keepAliveInterval)
 	ret0, _ := ret[0].(*v7.SearchResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Scroll indicates an expected call of Scroll.
-func (mr *MockClientMockRecorder) Scroll(ctx, scrollID, keepAliveInterval interface{}) *gomock.Call {
+func (mr *MockClientMockRecorder) Scroll(ctx, id, keepAliveInterval interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Scroll", reflect.TypeOf((*MockClient)(nil).Scroll), ctx, scrollID, keepAliveInterval)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Scroll", reflect.TypeOf((*MockClient)(nil).Scroll), ctx, id, keepAliveInterval)
 }
 
 // Search mocks base method.
@@ -318,6 +333,21 @@ func (m *MockCLIClient) Count(ctx context.Context, index string, query v7.Query)
 func (mr *MockCLIClientMockRecorder) Count(ctx, index, query interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Count", reflect.TypeOf((*MockCLIClient)(nil).Count), ctx, index, query)
+}
+
+// CountGroupBy mocks base method.
+func (m *MockCLIClient) CountGroupBy(ctx context.Context, index string, query v7.Query, aggName string, agg v7.Aggregation) (*v7.SearchResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountGroupBy", ctx, index, query, aggName, agg)
+	ret0, _ := ret[0].(*v7.SearchResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountGroupBy indicates an expected call of CountGroupBy.
+func (mr *MockCLIClientMockRecorder) CountGroupBy(ctx, index, query, aggName, agg interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountGroupBy", reflect.TypeOf((*MockCLIClient)(nil).CountGroupBy), ctx, index, query, aggName, agg)
 }
 
 // Delete mocks base method.
@@ -439,18 +469,18 @@ func (mr *MockCLIClientMockRecorder) RunBulkProcessor(ctx, p interface{}) *gomoc
 }
 
 // Scroll mocks base method.
-func (m *MockCLIClient) Scroll(ctx context.Context, scrollID, keepAliveInterval string) (*v7.SearchResult, error) {
+func (m *MockCLIClient) Scroll(ctx context.Context, id, keepAliveInterval string) (*v7.SearchResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Scroll", ctx, scrollID, keepAliveInterval)
+	ret := m.ctrl.Call(m, "Scroll", ctx, id, keepAliveInterval)
 	ret0, _ := ret[0].(*v7.SearchResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Scroll indicates an expected call of Scroll.
-func (mr *MockCLIClientMockRecorder) Scroll(ctx, scrollID, keepAliveInterval interface{}) *gomock.Call {
+func (mr *MockCLIClientMockRecorder) Scroll(ctx, id, keepAliveInterval interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Scroll", reflect.TypeOf((*MockCLIClient)(nil).Scroll), ctx, scrollID, keepAliveInterval)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Scroll", reflect.TypeOf((*MockCLIClient)(nil).Scroll), ctx, id, keepAliveInterval)
 }
 
 // Search mocks base method.
@@ -594,4 +624,19 @@ func (m *MockIntegrationTestsClient) IndexPutTemplate(ctx context.Context, templ
 func (mr *MockIntegrationTestsClientMockRecorder) IndexPutTemplate(ctx, templateName, bodyString interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IndexPutTemplate", reflect.TypeOf((*MockIntegrationTestsClient)(nil).IndexPutTemplate), ctx, templateName, bodyString)
+}
+
+// PutMapping mocks base method.
+func (m *MockIntegrationTestsClient) PutMapping(ctx context.Context, index string, mapping map[string]v1.IndexedValueType) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PutMapping", ctx, index, mapping)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PutMapping indicates an expected call of PutMapping.
+func (mr *MockIntegrationTestsClientMockRecorder) PutMapping(ctx, index, mapping interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PutMapping", reflect.TypeOf((*MockIntegrationTestsClient)(nil).PutMapping), ctx, index, mapping)
 }

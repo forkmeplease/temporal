@@ -24,53 +24,18 @@
 
 package membership
 
-import (
-	"context"
-
-	"go.uber.org/fx"
-)
-
-var HostInfoProviderModule = fx.Options(
-	fx.Provide(NewHostInfoProvider),
-	fx.Invoke(HostInfoProviderLifetimeHooks),
-)
-
 type (
-	CachingHostInfoProvider struct {
-		hostInfo          *HostInfo
-		membershipMonitor Monitor
+	hostInfoProvider struct {
+		hostInfo HostInfo
 	}
 )
 
-func NewHostInfoProvider(membershipMonitor Monitor) HostInfoProvider {
-	return &CachingHostInfoProvider{
-		membershipMonitor: membershipMonitor,
+func NewHostInfoProvider(hostInfo HostInfo) *hostInfoProvider {
+	return &hostInfoProvider{
+		hostInfo: hostInfo,
 	}
 }
 
-func (hip *CachingHostInfoProvider) Start() error {
-	var err error
-	hip.hostInfo, err = hip.membershipMonitor.WhoAmI()
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (hip *CachingHostInfoProvider) HostInfo() *HostInfo {
+func (hip *hostInfoProvider) HostInfo() HostInfo {
 	return hip.hostInfo
-}
-
-func HostInfoProviderLifetimeHooks(
-	lc fx.Lifecycle,
-	provider HostInfoProvider,
-) {
-	lc.Append(
-		fx.Hook{
-			OnStart: func(context.Context) error {
-				return provider.Start()
-			},
-		},
-	)
-
 }

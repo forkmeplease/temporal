@@ -25,7 +25,6 @@
 package history
 
 import (
-	"context"
 	"net"
 
 	"go.uber.org/fx"
@@ -54,6 +53,7 @@ import (
 	"go.temporal.io/server/common/searchattribute"
 	"go.temporal.io/server/service"
 	"go.temporal.io/server/service/history/api"
+	"go.temporal.io/server/service/history/archival"
 	"go.temporal.io/server/service/history/configs"
 	"go.temporal.io/server/service/history/consts"
 	"go.temporal.io/server/service/history/events"
@@ -68,6 +68,7 @@ var Module = fx.Options(
 	workflow.Module,
 	shard.Module,
 	cache.Module,
+	archival.Module,
 	fx.Provide(dynamicconfig.NewCollection),
 	fx.Provide(ConfigProvider), // might be worth just using provider for configs.Config directly
 	fx.Provide(RetryableInterceptorProvider),
@@ -119,28 +120,30 @@ func ServiceResolverProvider(membershipMonitor membership.Monitor) (membership.S
 
 func HandlerProvider(args NewHandlerArgs) *Handler {
 	handler := &Handler{
-		status:                        common.DaemonStatusInitialized,
-		config:                        args.Config,
-		tokenSerializer:               common.NewProtoTaskTokenSerializer(),
-		logger:                        args.Logger,
-		throttledLogger:               args.ThrottledLogger,
-		persistenceExecutionManager:   args.PersistenceExecutionManager,
-		persistenceShardManager:       args.PersistenceShardManager,
-		persistenceVisibilityManager:  args.PersistenceVisibilityManager,
-		historyServiceResolver:        args.HistoryServiceResolver,
-		metricsHandler:                args.MetricsHandler,
-		payloadSerializer:             args.PayloadSerializer,
-		timeSource:                    args.TimeSource,
-		namespaceRegistry:             args.NamespaceRegistry,
-		saProvider:                    args.SaProvider,
-		saMapper:                      args.SaMapper,
-		clusterMetadata:               args.ClusterMetadata,
-		archivalMetadata:              args.ArchivalMetadata,
-		hostInfoProvider:              args.HostInfoProvider,
-		controller:                    args.ShardController,
-		eventNotifier:                 args.EventNotifier,
-		replicationTaskFetcherFactory: args.ReplicationTaskFetcherFactory,
-		tracer:                        args.TracerProvider.Tracer(consts.LibraryName),
+		status:                       common.DaemonStatusInitialized,
+		config:                       args.Config,
+		tokenSerializer:              common.NewProtoTaskTokenSerializer(),
+		logger:                       args.Logger,
+		throttledLogger:              args.ThrottledLogger,
+		persistenceExecutionManager:  args.PersistenceExecutionManager,
+		persistenceShardManager:      args.PersistenceShardManager,
+		persistenceVisibilityManager: args.PersistenceVisibilityManager,
+		historyServiceResolver:       args.HistoryServiceResolver,
+		metricsHandler:               args.MetricsHandler,
+		payloadSerializer:            args.PayloadSerializer,
+		timeSource:                   args.TimeSource,
+		namespaceRegistry:            args.NamespaceRegistry,
+		saProvider:                   args.SaProvider,
+		clusterMetadata:              args.ClusterMetadata,
+		archivalMetadata:             args.ArchivalMetadata,
+		hostInfoProvider:             args.HostInfoProvider,
+		controller:                   args.ShardController,
+		eventNotifier:                args.EventNotifier,
+		tracer:                       args.TracerProvider.Tracer(consts.LibraryName),
+
+		replicationTaskFetcherFactory:    args.ReplicationTaskFetcherFactory,
+		replicationTaskConverterProvider: args.ReplicationTaskConverterFactory,
+		streamReceiverMonitor:            args.StreamReceiverMonitor,
 	}
 
 	// prevent us from trying to serve requests before shard controller is started and ready
@@ -161,10 +164,12 @@ func ConfigProvider(
 	persistenceConfig config.Persistence,
 	esConfig *esclient.Config,
 ) *configs.Config {
-	return configs.NewConfig(dc,
+	return configs.NewConfig(
+		dc,
 		persistenceConfig.NumHistoryShards,
+		persistenceConfig.StandardVisibilityConfigExist(),
 		persistenceConfig.AdvancedVisibilityConfigExist(),
-		esConfig.GetVisibilityIndex())
+	)
 }
 
 func ThrottledLoggerRpsFnProvider(serviceConfig *configs.Config) resource.ThrottledLoggerRpsFn {
@@ -194,7 +199,7 @@ func RateLimitInterceptorProvider(
 	serviceConfig *configs.Config,
 ) *interceptor.RateLimitInterceptor {
 	return interceptor.NewRateLimitInterceptor(
-		configs.NewPriorityRateLimiter(func() float64 { return float64(serviceConfig.RPS()) }),
+		configs.NewPriorityRateLimiter(func() float64 { return float64(serviceConfig.RPS()) }, serviceConfig.OperatorRPSRatio),
 		map[string]int{},
 	)
 }
@@ -219,7 +224,10 @@ func PersistenceRateLimitingParamsProvider(
 		serviceConfig.PersistenceMaxQPS,
 		serviceConfig.PersistenceGlobalMaxQPS,
 		serviceConfig.PersistenceNamespaceMaxQPS,
+		serviceConfig.PersistencePerShardNamespaceMaxQPS,
 		serviceConfig.EnablePersistencePriorityRateLimiting,
+		serviceConfig.OperatorRPSRatio,
+		serviceConfig.PersistenceDynamicRateLimitingParams,
 	)
 }
 
@@ -229,30 +237,25 @@ func VisibilityManagerProvider(
 	persistenceConfig *config.Persistence,
 	esProcessorConfig *elasticsearch.ProcessorConfig,
 	serviceConfig *configs.Config,
-	esConfig *esclient.Config,
 	esClient esclient.Client,
 	persistenceServiceResolver resolver.ServiceResolver,
-	searchAttributesMapper searchattribute.Mapper,
+	searchAttributesMapperProvider searchattribute.MapperProvider,
 	saProvider searchattribute.Provider,
 ) (manager.VisibilityManager, error) {
 	return visibility.NewManager(
 		*persistenceConfig,
 		persistenceServiceResolver,
-		esConfig.GetVisibilityIndex(),
-		esConfig.GetSecondaryVisibilityIndex(),
 		esClient,
 		esProcessorConfig,
 		saProvider,
-		searchAttributesMapper,
-		serviceConfig.StandardVisibilityPersistenceMaxReadQPS,
-		serviceConfig.StandardVisibilityPersistenceMaxWriteQPS,
-		serviceConfig.AdvancedVisibilityPersistenceMaxReadQPS,
-		serviceConfig.AdvancedVisibilityPersistenceMaxWriteQPS,
-		serviceConfig.EnableReadVisibilityFromES,
-		serviceConfig.AdvancedVisibilityWritingMode,
-		serviceConfig.EnableReadFromSecondaryAdvancedVisibility,
-		serviceConfig.EnableWriteToSecondaryAdvancedVisibility,
+		searchAttributesMapperProvider,
+		serviceConfig.VisibilityPersistenceMaxReadQPS,
+		serviceConfig.VisibilityPersistenceMaxWriteQPS,
+		serviceConfig.OperatorRPSRatio,
+		serviceConfig.EnableReadFromSecondaryVisibility,
+		serviceConfig.SecondaryVisibilityWritingMode,
 		serviceConfig.VisibilityDisableOrderByClause,
+		serviceConfig.VisibilityEnableManualPagination,
 		metricsHandler,
 		logger,
 	)
@@ -288,26 +291,6 @@ func ArchivalClientProvider(
 	)
 }
 
-func ServiceLifetimeHooks(
-	lc fx.Lifecycle,
-	svcStoppedCh chan struct{},
-	svc *Service,
-) {
-	lc.Append(
-		fx.Hook{
-			OnStart: func(context.Context) error {
-				go func(svc common.Daemon, svcStoppedCh chan<- struct{}) {
-					// Start is blocked until Stop() is called.
-					svc.Start()
-					close(svcStoppedCh)
-				}(svc, svcStoppedCh)
-
-				return nil
-			},
-			OnStop: func(ctx context.Context) error {
-				svc.Stop()
-				return nil
-			},
-		},
-	)
+func ServiceLifetimeHooks(lc fx.Lifecycle, svc *Service) {
+	lc.Append(fx.StartStopHook(svc.Start, svc.Stop))
 }

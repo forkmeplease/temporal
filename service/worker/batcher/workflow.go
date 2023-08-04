@@ -62,6 +62,8 @@ const (
 	BatchTypeSignal = "signal"
 	// BatchTypeDelete is batch type for deleting workflows
 	BatchTypeDelete = "delete"
+	// BatchTypeReset is batch type for resetting workflows
+	BatchTypeReset = "reset"
 )
 
 var (
@@ -92,15 +94,23 @@ type (
 	DeleteParams struct {
 	}
 
+	// ResetParams is the parameters for reseting workflow
+	ResetParams struct {
+		ResetType        enumspb.ResetType
+		ResetReapplyType enumspb.ResetReapplyType
+	}
+
 	// BatchParams is the parameters for batch operation workflow
 	BatchParams struct {
 		// Target namespace to execute batch operation
 		Namespace string
 		// To get the target workflows for processing
 		Query string
+		// Target workflows for processing
+		Executions []*commonpb.WorkflowExecution
 		// Reason for the operation
 		Reason string
-		// Supporting: signal,cancel,terminate
+		// Supporting: signal,cancel,terminate,delete,reset
 		BatchType string
 
 		// Below are all optional
@@ -112,6 +122,8 @@ type (
 		SignalParams SignalParams
 		// DeleteParams is params only for BatchTypeDelete
 		DeleteParams DeleteParams
+		// ResetParams is params only for BatchTypeReset
+		ResetParams ResetParams
 		// RPS of processing. Default to DefaultRPS
 		// This is moving to dynamic config.
 		// TODO: Remove it from BatchParams after 1.19+
@@ -207,8 +219,11 @@ func validateParams(params BatchParams) error {
 	if params.BatchType == "" ||
 		params.Reason == "" ||
 		params.Namespace == "" ||
-		params.Query == "" {
-		return fmt.Errorf("must provide required parameters: BatchType/Reason/Namespace/Query")
+		(params.Query == "" && len(params.Executions) == 0) {
+		return fmt.Errorf("must provide required parameters: BatchType/Reason/Namespace/Query/Executions")
+	}
+	if len(params.Query) > 0 && len(params.Executions) > 0 {
+		return fmt.Errorf("batch query and executions are mutually exclusive")
 	}
 	switch params.BatchType {
 	case BatchTypeSignal:
@@ -216,7 +231,7 @@ func validateParams(params BatchParams) error {
 			return fmt.Errorf("must provide signal name")
 		}
 		return nil
-	case BatchTypeCancel, BatchTypeTerminate:
+	case BatchTypeCancel, BatchTypeTerminate, BatchTypeDelete, BatchTypeReset:
 		return nil
 	default:
 		return fmt.Errorf("not supported batch type: %v", params.BatchType)

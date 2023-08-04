@@ -97,3 +97,13 @@ const (
 	// Limit for schedule notes field
 	ScheduleNotesSizeLimit = 1000
 )
+
+const (
+	// DefaultQueueReaderID is the default readerID when loading history tasks
+	DefaultQueueReaderID int64 = 0
+)
+
+const (
+	// DefaultOperatorRPSRatio is the default percentage of rate limit that should be used for operator priority requests
+	DefaultOperatorRPSRatio float64 = 0.2
+)

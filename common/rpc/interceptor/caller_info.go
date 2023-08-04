@@ -27,9 +27,10 @@ package interceptor
 import (
 	"context"
 
+	"google.golang.org/grpc"
+
 	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/namespace"
-	"google.golang.org/grpc"
 )
 
 type (
@@ -58,16 +59,16 @@ func (i *CallerInfoInterceptor) Intercept(
 
 	updateInfo := false
 	if callerInfo.CallerName == "" {
-		callerInfo.CallerName = string(GetNamespace(i.namespaceRegistry, req))
+		callerInfo.CallerName = string(MustGetNamespaceName(i.namespaceRegistry, req))
 		updateInfo = callerInfo.CallerName != ""
 	}
 	if callerInfo.CallerType == "" {
 		callerInfo.CallerType = headers.CallerTypeAPI
 		updateInfo = true
 	}
-	if callerInfo.CallerType == headers.CallerTypeAPI &&
+	if (callerInfo.CallerType == headers.CallerTypeAPI || callerInfo.CallerType == headers.CallerTypeOperator) &&
 		callerInfo.CallOrigin == "" {
-		_, method := splitMethodName(info.FullMethod)
+		_, method := SplitMethodName(info.FullMethod)
 		callerInfo.CallOrigin = method
 		updateInfo = true
 	}

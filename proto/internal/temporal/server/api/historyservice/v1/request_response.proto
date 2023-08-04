@@ -34,6 +34,7 @@ import "temporal/api/taskqueue/v1/message.proto";
 import "temporal/api/enums/v1/workflow.proto";
 import "temporal/api/workflow/v1/message.proto";
 import "temporal/api/query/v1/message.proto";
+import "temporal/api/protocol/v1/message.proto";
 import "temporal/api/failure/v1/message.proto";
 
 import "temporal/server/api/clock/v1/message.proto";
@@ -57,14 +58,21 @@ message StartWorkflowExecutionRequest {
     int32 attempt = 4;
     google.protobuf.Timestamp workflow_execution_expiration_time = 5 [(gogoproto.stdtime) = true];
     temporal.api.enums.v1.ContinueAsNewInitiator continue_as_new_initiator = 6;
+    // History service should use the values of continued_failure and last_completion_result
+    // here, not the ones in start_request (those are moved into here in the frontend).
     temporal.api.failure.v1.Failure continued_failure = 7;
     temporal.api.common.v1.Payloads last_completion_result = 8;
     google.protobuf.Duration first_workflow_task_backoff = 9 [(gogoproto.stdduration) = true];
+    // For child or continued-as-new workflows, including a version here from the source
+    // (parent/previous) will set the initial version stamp of this workflow.
+    temporal.api.common.v1.WorkerVersionStamp source_version_stamp = 10;
 }
 
 message StartWorkflowExecutionResponse {
     string run_id = 1;
     temporal.server.api.clock.v1.VectorClock clock = 2;
+    // Set if request_eager_execution is set on the start request 
+    temporal.api.workflowservice.v1.PollWorkflowTaskQueueResponse eager_workflow_task = 3;
 }
 
 message GetMutableStateRequest {
@@ -97,6 +105,9 @@ message GetMutableStateResponse {
     bool is_sticky_task_queue_enabled = 18;
     int64 last_first_event_txn_id = 19;
     string first_execution_run_id = 20;
+    // If using build-id based versioning: version stamp of last worker to complete a workflow
+    // task for this workflow.
+    temporal.api.common.v1.WorkerVersionStamp worker_version_stamp = 21;
 }
 
 message PollMutableStateRequest {
@@ -164,6 +175,8 @@ message RecordWorkflowTaskStartedResponse {
     google.protobuf.Timestamp started_time = 13 [(gogoproto.stdtime) = true];
     map<string, temporal.api.query.v1.WorkflowQuery> queries = 14;
     temporal.server.api.clock.v1.VectorClock clock = 15;
+    repeated temporal.api.protocol.v1.Message messages = 16;
+    int64 version = 17;
 }
 
 message RecordActivityTaskStartedRequest {
@@ -186,6 +199,7 @@ message RecordActivityTaskStartedResponse {
     temporal.api.common.v1.WorkflowType workflow_type = 6;
     string workflow_namespace = 7;
     temporal.server.api.clock.v1.VectorClock clock = 8;
+    int64 version = 9;
 }
 
 message RespondWorkflowTaskCompletedRequest {
@@ -196,6 +210,7 @@ message RespondWorkflowTaskCompletedRequest {
 message RespondWorkflowTaskCompletedResponse {
     RecordWorkflowTaskStartedResponse started_response = 1;
     repeated temporal.api.workflowservice.v1.PollActivityTaskQueueResponse activity_tasks = 2;
+    int64 reset_history_event_id = 3;
 }
 
 message RespondWorkflowTaskFailedRequest {
@@ -204,6 +219,18 @@ message RespondWorkflowTaskFailedRequest {
 }
 
 message RespondWorkflowTaskFailedResponse {
+}
+
+message IsWorkflowTaskValidRequest {
+    string namespace_id = 1;
+    temporal.api.common.v1.WorkflowExecution execution = 2;
+    temporal.server.api.clock.v1.VectorClock clock = 3;
+    int64 scheduled_event_id = 4;
+}
+
+message IsWorkflowTaskValidResponse {
+    // whether matching service can call history service to start the workflow task
+    bool is_valid = 1;
 }
 
 message RecordActivityTaskHeartbeatRequest {
@@ -237,6 +264,18 @@ message RespondActivityTaskCanceledRequest {
 }
 
 message RespondActivityTaskCanceledResponse {
+}
+
+message IsActivityTaskValidRequest {
+    string namespace_id = 1;
+    temporal.api.common.v1.WorkflowExecution execution = 2;
+    temporal.server.api.clock.v1.VectorClock clock = 3;
+    int64 scheduled_event_id = 4;
+}
+
+message IsActivityTaskValidResponse {
+    // whether matching service can call history service to start the activity task
+    bool is_valid = 1;
 }
 
 message SignalWorkflowExecutionRequest {
@@ -313,7 +352,8 @@ message ScheduleWorkflowTaskRequest {
     string namespace_id = 1;
     temporal.api.common.v1.WorkflowExecution workflow_execution = 2;
     bool is_first_workflow_task = 3;
-    temporal.server.api.clock.v1.VectorClock clock = 4;
+    temporal.server.api.clock.v1.VectorClock child_clock = 4;
+    temporal.server.api.clock.v1.VectorClock parent_clock = 5;
 }
 
 message ScheduleWorkflowTaskResponse {
@@ -337,9 +377,9 @@ message VerifyFirstWorkflowTaskScheduledResponse {
 **/
 message RecordChildExecutionCompletedRequest {
     string namespace_id = 1;
-    temporal.api.common.v1.WorkflowExecution workflow_execution = 2;
+    temporal.api.common.v1.WorkflowExecution parent_execution = 2;
     int64 parent_initiated_id = 3;
-    temporal.api.common.v1.WorkflowExecution completed_execution = 4;
+    temporal.api.common.v1.WorkflowExecution child_execution = 4;
     temporal.api.history.v1.HistoryEvent completion_event = 5;
     temporal.server.api.clock.v1.VectorClock clock = 6;
     int64 parent_initiated_version = 7;
@@ -380,14 +420,19 @@ message ReplicateEventsV2Request {
     temporal.api.common.v1.DataBlob events = 4;
     // New run events does not need version history since there is no prior events.
     temporal.api.common.v1.DataBlob new_run_events = 5;
+    temporal.server.api.workflow.v1.BaseExecutionInfo base_execution_info = 6;
+}
+
+message ReplicateEventsV2Response {
 }
 
 message ReplicateWorkflowStateRequest {
     temporal.server.api.persistence.v1.WorkflowMutableState workflow_state = 1;
     string remote_cluster = 2;
+    string namespace_id= 3;
 }
 
-message ReplicateEventsV2Response {
+message ReplicateWorkflowStateResponse {
 }
 
 message SyncShardStatusRequest {
@@ -414,6 +459,8 @@ message SyncActivityRequest {
     temporal.api.failure.v1.Failure last_failure = 12;
     string last_worker_identity = 13;
     temporal.server.api.history.v1.VersionHistory version_history = 14;
+    temporal.server.api.workflow.v1.BaseExecutionInfo base_execution_info = 15;
+
 }
 
 message SyncActivityResponse {
@@ -519,6 +566,7 @@ message GetDLQMessagesResponse {
     temporal.server.api.enums.v1.DeadLetterQueueType type = 1;
     repeated temporal.server.api.replication.v1.ReplicationTask replication_tasks = 2;
     bytes next_page_token = 3;
+    repeated temporal.server.api.replication.v1.ReplicationTaskInfo replication_tasks_info = 4;
 }
 
 message PurgeDLQMessagesRequest {
@@ -558,6 +606,7 @@ message GenerateLastHistoryReplicationTasksRequest {
 }
 
 message GenerateLastHistoryReplicationTasksResponse {
+    int64 state_transition_count = 1;
 }
 
 message GetReplicationStatusRequest {
@@ -613,11 +662,32 @@ message DeleteWorkflowVisibilityRecordResponse {
 
 // (-- api-linter: core::0134=disabled
 //     aip.dev/not-precedent: This service does not follow the update method AIP --)
-message UpdateWorkflowRequest {
+message UpdateWorkflowExecutionRequest {
     string namespace_id = 1;
-    temporal.api.workflowservice.v1.UpdateWorkflowRequest request = 2;
+    temporal.api.workflowservice.v1.UpdateWorkflowExecutionRequest request = 2;
 }
 
-message UpdateWorkflowResponse {
-    temporal.api.workflowservice.v1.UpdateWorkflowResponse response = 1;
+message UpdateWorkflowExecutionResponse {
+    temporal.api.workflowservice.v1.UpdateWorkflowExecutionResponse response = 1;
+}
+
+message StreamWorkflowReplicationMessagesRequest {
+    oneof attributes {
+        temporal.server.api.replication.v1.SyncReplicationState sync_replication_state = 1;
+    }
+}
+
+message StreamWorkflowReplicationMessagesResponse {
+    oneof attributes {
+        temporal.server.api.replication.v1.WorkflowReplicationMessages messages = 1;
+    }
+}
+
+message PollWorkflowExecutionUpdateRequest {
+    string namespace_id = 1;
+    temporal.api.workflowservice.v1.PollWorkflowExecutionUpdateRequest request = 2;
+}
+
+message PollWorkflowExecutionUpdateResponse {
+    temporal.api.workflowservice.v1.PollWorkflowExecutionUpdateResponse response = 1;
 }

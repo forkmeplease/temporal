@@ -83,7 +83,6 @@ clusterMetadata:
 
 dcRedirectionPolicy:
   policy: "noop"
-  toDC: ""
 
 archival:
   history:
@@ -111,9 +110,6 @@ namespaceDefaults:
     visibility:
       state: "disabled"
       URI: "file:///tmp/temporal_vis_archival/development"
-
-publicClient:
-  hostPort: "localhost:7233"
 
 dynamicConfigClient:
   filepath: "config/dynamicconfig/development-sql.yaml"

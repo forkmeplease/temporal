@@ -32,10 +32,10 @@ import (
 // Group manages a set of long-running goroutines. Goroutines are spawned
 // individually with Group.Go and after that interrupted and waited-on as a
 // single unit. The expected use-case for this type is as a member field of a
-// `common.Daemon` (or similar) type that spawns one or more goroutines in
-// its Start() function and then stops those same goroutines in its Stop()
-// function. The zero-value of this type is valid. A Group must not be copied
-// after first use.
+// background process type that spawns one or more goroutines in its Start()
+// function and then stops those same goroutines in its Stop() function.
+// The zero-value of this type is valid. A Group must not be copied after
+// first use.
 type Group struct {
 	initOnce sync.Once
 	ctx      context.Context
@@ -49,12 +49,13 @@ type Group struct {
 // If the supplied func does not abide by `ctx.Done()` of the provided
 // `context.Context` then `Wait()` on this `Group` will hang until all functions
 // exit on their own (possibly never).
+// NOTE: Errors returned by the supplied function are ignored.
 func (g *Group) Go(f func(ctx context.Context) error) {
 	g.initOnce.Do(g.init)
 	g.wg.Add(1)
 	go func() {
 		defer g.wg.Done()
-		f(g.ctx)
+		_ = f(g.ctx)
 	}()
 }
 

@@ -71,6 +71,7 @@ type (
 	}
 
 	FaultInjectionExecutionStore struct {
+		persistence.HistoryBranchUtilImpl
 		baseExecutionStore persistence.ExecutionStore
 		ErrorGenerator     ErrorGenerator
 	}
@@ -537,6 +538,30 @@ func (e *FaultInjectionExecutionStore) ListConcreteExecutions(
 	return e.baseExecutionStore.ListConcreteExecutions(ctx, request)
 }
 
+func (e *FaultInjectionExecutionStore) RegisterHistoryTaskReader(
+	ctx context.Context,
+	request *persistence.RegisterHistoryTaskReaderRequest,
+) error {
+	// hint methods don't actually hint DB, so don't inject any failure
+	return e.baseExecutionStore.RegisterHistoryTaskReader(ctx, request)
+}
+
+func (e *FaultInjectionExecutionStore) UnregisterHistoryTaskReader(
+	ctx context.Context,
+	request *persistence.UnregisterHistoryTaskReaderRequest,
+) {
+	// hint methods don't actually hint DB, so don't inject any failure
+	e.baseExecutionStore.UnregisterHistoryTaskReader(ctx, request)
+}
+
+func (e *FaultInjectionExecutionStore) UpdateHistoryTaskReaderProgress(
+	ctx context.Context,
+	request *persistence.UpdateHistoryTaskReaderProgressRequest,
+) {
+	// hint methods don't actually hint DB, so don't inject any failure
+	e.baseExecutionStore.UpdateHistoryTaskReaderProgress(ctx, request)
+}
+
 func (e *FaultInjectionExecutionStore) AddHistoryTasks(
 	ctx context.Context,
 	request *persistence.InternalAddHistoryTasksRequest,
@@ -545,16 +570,6 @@ func (e *FaultInjectionExecutionStore) AddHistoryTasks(
 		return err
 	}
 	return e.baseExecutionStore.AddHistoryTasks(ctx, request)
-}
-
-func (e *FaultInjectionExecutionStore) GetHistoryTask(
-	ctx context.Context,
-	request *persistence.GetHistoryTaskRequest,
-) (*persistence.InternalGetHistoryTaskResponse, error) {
-	if err := e.ErrorGenerator.Generate(); err != nil {
-		return nil, err
-	}
-	return e.baseExecutionStore.GetHistoryTask(ctx, request)
 }
 
 func (e *FaultInjectionExecutionStore) GetHistoryTasks(
@@ -630,6 +645,16 @@ func (e *FaultInjectionExecutionStore) RangeDeleteReplicationTaskFromDLQ(
 	return e.baseExecutionStore.RangeDeleteReplicationTaskFromDLQ(ctx, request)
 }
 
+func (e *FaultInjectionExecutionStore) IsReplicationDLQEmpty(
+	ctx context.Context,
+	request *persistence.GetReplicationTasksFromDLQRequest,
+) (bool, error) {
+	if err := e.ErrorGenerator.Generate(); err != nil {
+		return true, err
+	}
+	return e.baseExecutionStore.IsReplicationDLQEmpty(ctx, request)
+}
+
 func (e *FaultInjectionExecutionStore) AppendHistoryNodes(
 	ctx context.Context,
 	request *persistence.InternalAppendHistoryNodesRequest,
@@ -648,36 +673,6 @@ func (e *FaultInjectionExecutionStore) DeleteHistoryNodes(
 		return err
 	}
 	return e.baseExecutionStore.DeleteHistoryNodes(ctx, request)
-}
-
-func (e *FaultInjectionExecutionStore) ParseHistoryBranchInfo(
-	ctx context.Context,
-	request *persistence.ParseHistoryBranchInfoRequest,
-) (*persistence.ParseHistoryBranchInfoResponse, error) {
-	if err := e.ErrorGenerator.Generate(); err != nil {
-		return nil, err
-	}
-	return e.baseExecutionStore.ParseHistoryBranchInfo(ctx, request)
-}
-
-func (e *FaultInjectionExecutionStore) UpdateHistoryBranchInfo(
-	ctx context.Context,
-	request *persistence.UpdateHistoryBranchInfoRequest,
-) (*persistence.UpdateHistoryBranchInfoResponse, error) {
-	if err := e.ErrorGenerator.Generate(); err != nil {
-		return nil, err
-	}
-	return e.baseExecutionStore.UpdateHistoryBranchInfo(ctx, request)
-}
-
-func (e *FaultInjectionExecutionStore) NewHistoryBranch(
-	ctx context.Context,
-	request *persistence.NewHistoryBranchRequest,
-) (*persistence.NewHistoryBranchResponse, error) {
-	if err := e.ErrorGenerator.Generate(); err != nil {
-		return nil, err
-	}
-	return e.baseExecutionStore.NewHistoryBranch(ctx, request)
 }
 
 func (e *FaultInjectionExecutionStore) ReadHistoryBranch(
@@ -1037,6 +1032,41 @@ func (t *FaultInjectionTaskStore) CompleteTasksLessThan(
 		return 0, err
 	}
 	return t.baseTaskStore.CompleteTasksLessThan(ctx, request)
+}
+
+func (t *FaultInjectionTaskStore) GetTaskQueueUserData(ctx context.Context, request *persistence.GetTaskQueueUserDataRequest) (*persistence.InternalGetTaskQueueUserDataResponse, error) {
+	if err := t.ErrorGenerator.Generate(); err != nil {
+		return nil, err
+	}
+	return t.baseTaskStore.GetTaskQueueUserData(ctx, request)
+}
+
+func (t *FaultInjectionTaskStore) UpdateTaskQueueUserData(ctx context.Context, request *persistence.InternalUpdateTaskQueueUserDataRequest) error {
+	if err := t.ErrorGenerator.Generate(); err != nil {
+		return err
+	}
+	return t.baseTaskStore.UpdateTaskQueueUserData(ctx, request)
+}
+
+func (t *FaultInjectionTaskStore) ListTaskQueueUserDataEntries(ctx context.Context, request *persistence.ListTaskQueueUserDataEntriesRequest) (*persistence.InternalListTaskQueueUserDataEntriesResponse, error) {
+	if err := t.ErrorGenerator.Generate(); err != nil {
+		return nil, err
+	}
+	return t.baseTaskStore.ListTaskQueueUserDataEntries(ctx, request)
+}
+
+func (t *FaultInjectionTaskStore) GetTaskQueuesByBuildId(ctx context.Context, request *persistence.GetTaskQueuesByBuildIdRequest) ([]string, error) {
+	if err := t.ErrorGenerator.Generate(); err != nil {
+		return nil, err
+	}
+	return t.baseTaskStore.GetTaskQueuesByBuildId(ctx, request)
+}
+
+func (t *FaultInjectionTaskStore) CountTaskQueuesByBuildId(ctx context.Context, request *persistence.CountTaskQueuesByBuildIdRequest) (int, error) {
+	if err := t.ErrorGenerator.Generate(); err != nil {
+		return 0, err
+	}
+	return t.baseTaskStore.CountTaskQueuesByBuildId(ctx, request)
 }
 
 func (t *FaultInjectionTaskStore) UpdateRate(rate float64) {

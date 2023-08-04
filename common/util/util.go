@@ -98,3 +98,57 @@ func CloneMapNonNil[M ~map[K]V, K comparable, V any](m M) M {
 	}
 	return m
 }
+
+// InverseMap creates the inverse map, ie., for a key-value map, it builds the value-key map.
+func InverseMap[M ~map[K]V, K, V comparable](m M) map[V]K {
+	if m == nil {
+		return nil
+	}
+	invm := make(map[V]K, len(m))
+	for k, v := range m {
+		invm[v] = k
+	}
+	return invm
+}
+
+// MapConcurrent concurrently maps a function over input and fails fast on error.
+func MapConcurrent[IN any, OUT any](input []IN, mapper func(IN) (OUT, error)) ([]OUT, error) {
+	errorsCh := make(chan error, len(input))
+	results := make([]OUT, len(input))
+
+	for i, in := range input {
+		i := i
+		in := in
+		go func() {
+			var err error
+			results[i], err = mapper(in)
+			errorsCh <- err
+		}()
+	}
+	for range input {
+		if err := <-errorsCh; err != nil {
+			return nil, err
+		}
+	}
+	return results, nil
+}
+
+// FilterSlice iterates over elements of a slice, returning a new slice of all elements predicate returns true for.
+func FilterSlice[T any](in []T, predicate func(T) bool) []T {
+	var out []T
+	for _, elem := range in {
+		if predicate(elem) {
+			out = append(out, elem)
+		}
+	}
+	return out
+}
+
+// ReduceSlice reduces a slice using given reducer function and initial value.
+func ReduceSlice[T any, A any](in []T, initializer A, reducer func(A, T) A) A {
+	acc := initializer
+	for _, val := range in {
+		acc = reducer(acc, val)
+	}
+	return acc
+}

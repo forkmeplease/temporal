@@ -55,6 +55,7 @@ func Invoke(
 			request.WorkflowExecution.WorkflowId,
 			request.WorkflowExecution.RunId,
 		),
+		workflow.LockPriorityLow,
 	)
 	if err != nil {
 		return nil, err
@@ -88,11 +89,9 @@ func Invoke(
 				weCtx,
 				func(workflowContext api.WorkflowContext) (*api.UpdateWorkflowAction, error) {
 					mutableState := workflowContext.GetMutableState()
-					eventBatchFirstEventID := mutableState.GetNextEventID()
 
 					return api.UpdateWorkflowWithoutWorkflowTask, workflow.TerminateWorkflow(
 						mutableState,
-						eventBatchFirstEventID,
 						"Delete workflow execution",
 						nil,
 						consts.IdentityHistoryService,

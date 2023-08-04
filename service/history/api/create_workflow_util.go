@@ -95,18 +95,35 @@ func NewWorkflowWithSignal(
 			signalWithStartRequest.GetSignalInput(),
 			signalWithStartRequest.GetIdentity(),
 			signalWithStartRequest.GetHeader(),
+			signalWithStartRequest.GetSkipGenerateWorkflowTask(),
 		); err != nil {
 			return nil, err
 		}
 	}
-
+	requestEagerExecution := startRequest.StartRequest.GetRequestEagerExecution()
 	// Generate first workflow task event if not child WF and no first workflow task backoff
-	if err := GenerateFirstWorkflowTask(
+	scheduledEventID, err := GenerateFirstWorkflowTask(
 		newMutableState,
 		startRequest.ParentExecutionInfo,
 		startEvent,
-	); err != nil {
+		requestEagerExecution,
+	)
+	if err != nil {
 		return nil, err
+	}
+
+	// If first workflow task should back off (e.g. cron or workflow retry) a workflow task will not be scheduled.
+	if requestEagerExecution && newMutableState.HasPendingWorkflowTask() {
+		_, _, err = newMutableState.AddWorkflowTaskStartedEvent(
+			scheduledEventID,
+			startRequest.StartRequest.RequestId,
+			startRequest.StartRequest.TaskQueue,
+			startRequest.StartRequest.Identity,
+		)
+		if err != nil {
+			// Unable to add WorkflowTaskStarted event to history
+			return nil, err
+		}
 	}
 
 	newWorkflowContext := workflow.NewContext(
@@ -146,17 +163,13 @@ func GenerateFirstWorkflowTask(
 	mutableState workflow.MutableState,
 	parentInfo *workflowspb.ParentExecutionInfo,
 	startEvent *historypb.HistoryEvent,
-) error {
-
+	bypassTaskGeneration bool,
+) (int64, error) {
 	if parentInfo == nil {
 		// WorkflowTask is only created when it is not a Child Workflow and no backoff is needed
-		if err := mutableState.AddFirstWorkflowTaskScheduled(
-			startEvent,
-		); err != nil {
-			return err
-		}
+		return mutableState.AddFirstWorkflowTaskScheduled(nil, startEvent, bypassTaskGeneration)
 	}
-	return nil
+	return 0, nil
 }
 
 func NewWorkflowVersionCheck(
@@ -272,8 +285,7 @@ func ValidateStartWorkflowExecutionRequest(
 	if err := common.ValidateRetryPolicy(request.RetryPolicy); err != nil {
 		return err
 	}
-
-	if err := ValidateStart(
+	return ValidateStart(
 		ctx,
 		shard,
 		namespaceEntry,
@@ -281,11 +293,7 @@ func ValidateStartWorkflowExecutionRequest(
 		request.GetInput().Size(),
 		request.GetMemo().Size(),
 		operation,
-	); err != nil {
-		return err
-	}
-
-	return nil
+	)
 }
 
 func OverrideStartWorkflowExecutionRequest(

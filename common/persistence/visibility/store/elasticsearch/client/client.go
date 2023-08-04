@@ -45,16 +45,17 @@ type (
 		Get(ctx context.Context, index string, docID string) (*elastic.GetResult, error)
 		Search(ctx context.Context, p *SearchParameters) (*elastic.SearchResult, error)
 		Count(ctx context.Context, index string, query elastic.Query) (int64, error)
+		CountGroupBy(ctx context.Context, index string, query elastic.Query, aggName string, agg elastic.Aggregation) (*elastic.SearchResult, error)
 		RunBulkProcessor(ctx context.Context, p *BulkProcessorParameters) (BulkProcessor, error)
-
-		OpenScroll(ctx context.Context, p *SearchParameters, keepAliveInterval string) (*elastic.SearchResult, error)
-		Scroll(ctx context.Context, scrollID string, keepAliveInterval string) (*elastic.SearchResult, error)
-		CloseScroll(ctx context.Context, id string) error
 
 		// TODO (alex): move this to some admin client (and join with IntegrationTestsClient)
 		PutMapping(ctx context.Context, index string, mapping map[string]enumspb.IndexedValueType) (bool, error)
 		WaitForYellowStatus(ctx context.Context, index string) (string, error)
 		GetMapping(ctx context.Context, index string) (map[string]string, error)
+
+		OpenScroll(ctx context.Context, p *SearchParameters, keepAliveInterval string) (*elastic.SearchResult, error)
+		Scroll(ctx context.Context, id string, keepAliveInterval string) (*elastic.SearchResult, error)
+		CloseScroll(ctx context.Context, id string) error
 
 		IsPointInTimeSupported(ctx context.Context) bool
 		OpenPointInTime(ctx context.Context, index string, keepAliveInterval string) (string, error)
@@ -73,6 +74,7 @@ type (
 		DeleteIndex(ctx context.Context, indexName string) (bool, error)
 		IndexPutSettings(ctx context.Context, indexName string, bodyString string) (bool, error)
 		IndexGetSettings(ctx context.Context, indexName string) (map[string]*elastic.IndicesGetSettingsResponse, error)
+		PutMapping(ctx context.Context, index string, mapping map[string]enumspb.IndexedValueType) (bool, error)
 	}
 
 	// SearchParameters holds all required and optional parameters for executing a search.
@@ -83,6 +85,7 @@ type (
 		Sorter   []elastic.Sorter
 
 		SearchAfter []interface{}
+		ScrollID    string
 		PointInTime *elastic.PointInTime
 	}
 )

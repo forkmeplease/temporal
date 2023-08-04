@@ -25,7 +25,7 @@
 package frontend
 
 import (
-	"context"
+	"fmt"
 	"net"
 
 	"go.uber.org/fx"
@@ -74,6 +74,7 @@ var Module = fx.Options(
 	fx.Provide(dynamicconfig.NewCollection),
 	fx.Provide(ConfigProvider),
 	fx.Provide(NamespaceLogInterceptorProvider),
+	fx.Provide(RedirectionInterceptorProvider),
 	fx.Provide(TelemetryInterceptorProvider),
 	fx.Provide(RetryableInterceptorProvider),
 	fx.Provide(RateLimitInterceptorProvider),
@@ -110,6 +111,7 @@ func NewServiceProvider(
 	grpcListener net.Listener,
 	metricsHandler metrics.Handler,
 	faultInjectionDataStoreFactory *persistenceClient.FaultInjectionDataStoreFactory,
+	membershipMonitor membership.Monitor,
 ) *Service {
 	return NewService(
 		serviceConfig,
@@ -124,17 +126,20 @@ func NewServiceProvider(
 		grpcListener,
 		metricsHandler,
 		faultInjectionDataStoreFactory,
+		membershipMonitor,
 	)
 }
 
 func GrpcServerOptionsProvider(
 	logger log.Logger,
 	serviceConfig *Config,
+	serviceName primitives.ServiceName,
 	rpcFactory common.RPCFactory,
 	namespaceLogInterceptor *interceptor.NamespaceLogInterceptor,
 	namespaceRateLimiterInterceptor *interceptor.NamespaceRateLimitInterceptor,
-	namespaceCountLimiterInterceptor *interceptor.NamespaceCountLimitInterceptor,
+	namespaceCountLimiterInterceptor *interceptor.ConcurrentRequestLimitInterceptor,
 	namespaceValidatorInterceptor *interceptor.NamespaceValidatorInterceptor,
+	redirectionInterceptor *RedirectionInterceptor,
 	telemetryInterceptor *interceptor.TelemetryInterceptor,
 	retryableInterceptor *interceptor.RetryableInterceptor,
 	rateLimitInterceptor *interceptor.RateLimitInterceptor,
@@ -158,18 +163,28 @@ func GrpcServerOptionsProvider(
 		Time:                  serviceConfig.KeepAliveTime(),
 		Timeout:               serviceConfig.KeepAliveTimeout(),
 	}
-	grpcServerOptions, err := rpcFactory.GetFrontendGRPCServerOptions()
+	var grpcServerOptions []grpc.ServerOption
+	var err error
+	switch serviceName {
+	case primitives.FrontendService:
+		grpcServerOptions, err = rpcFactory.GetFrontendGRPCServerOptions()
+	case primitives.InternalFrontendService:
+		grpcServerOptions, err = rpcFactory.GetInternodeGRPCServerOptions()
+	default:
+		err = fmt.Errorf("unexpected frontend service name %q", serviceName)
+	}
 	if err != nil {
 		logger.Fatal("creating gRPC server options failed", tag.Error(err))
 	}
-	interceptors := []grpc.UnaryServerInterceptor{
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		// Service Error Interceptor should be the most outer interceptor on error handling
 		rpc.ServiceErrorInterceptor,
-		namespaceValidatorInterceptor.LengthValidationIntercept,
+		namespaceValidatorInterceptor.NamespaceValidateIntercept,
 		namespaceLogInterceptor.Intercept, // TODO: Deprecate this with a outer custom interceptor
 		grpc.UnaryServerInterceptor(traceInterceptor),
 		metrics.NewServerMetricsContextInjectorInterceptor(),
-		telemetryInterceptor.Intercept,
+		redirectionInterceptor.Intercept,
+		telemetryInterceptor.UnaryIntercept,
 		authorization.NewAuthorizationInterceptor(
 			claimMapper,
 			authorizer,
@@ -186,28 +201,32 @@ func GrpcServerOptionsProvider(
 	}
 	if len(customInterceptors) > 0 {
 		// TODO: Deprecate WithChainedFrontendGrpcInterceptors and provide a inner custom interceptor
-		interceptors = append(interceptors, customInterceptors...)
+		unaryInterceptors = append(unaryInterceptors, customInterceptors...)
 	}
 	// retry interceptor should be the most inner interceptor
-	interceptors = append(interceptors, retryableInterceptor.Intercept)
+	unaryInterceptors = append(unaryInterceptors, retryableInterceptor.Intercept)
+
+	streamInterceptor := []grpc.StreamServerInterceptor{
+		telemetryInterceptor.StreamIntercept,
+	}
 
 	return append(
 		grpcServerOptions,
 		grpc.KeepaliveParams(kp),
 		grpc.KeepaliveEnforcementPolicy(kep),
-		grpc.ChainUnaryInterceptor(interceptors...),
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptor...),
 	)
 }
 
 func ConfigProvider(
 	dc *dynamicconfig.Collection,
 	persistenceConfig config.Persistence,
-	esConfig *esclient.Config,
 ) *Config {
 	return NewConfig(
 		dc,
 		persistenceConfig.NumHistoryShards,
-		esConfig.GetVisibilityIndex(),
+		persistenceConfig.StandardVisibilityConfigExist(),
 		persistenceConfig.AdvancedVisibilityConfigExist(),
 	)
 }
@@ -232,6 +251,28 @@ func RetryableInterceptorProvider() *interceptor.RetryableInterceptor {
 	)
 }
 
+func RedirectionInterceptorProvider(
+	configuration *Config,
+	namespaceCache namespace.Registry,
+	policy config.DCRedirectionPolicy,
+	logger log.Logger,
+	clientBean client.Bean,
+	metricsHandler metrics.Handler,
+	timeSource clock.TimeSource,
+	clusterMetadata cluster.Metadata,
+) *RedirectionInterceptor {
+	return NewRedirectionInterceptor(
+		configuration,
+		namespaceCache,
+		policy,
+		logger,
+		clientBean,
+		metricsHandler,
+		timeSource,
+		clusterMetadata,
+	)
+}
+
 func TelemetryInterceptorProvider(
 	logger log.Logger,
 	metricsHandler metrics.Handler,
@@ -246,46 +287,74 @@ func TelemetryInterceptorProvider(
 
 func RateLimitInterceptorProvider(
 	serviceConfig *Config,
+	frontendServiceResolver membership.ServiceResolver,
 ) *interceptor.RateLimitInterceptor {
-	rateFn := func() float64 { return float64(serviceConfig.RPS()) }
+	rateFn := quotas.ClusterAwareQuotaCalculator{
+		MemberCounter:    frontendServiceResolver,
+		PerInstanceQuota: serviceConfig.RPS,
+		GlobalQuota:      serviceConfig.GlobalRPS,
+	}.GetQuota
+	namespaceReplicationInducingRateFn := func() float64 {
+		return float64(serviceConfig.NamespaceReplicationInducingAPIsRPS())
+	}
+
 	return interceptor.NewRateLimitInterceptor(
 		configs.NewRequestToRateLimiter(
 			quotas.NewDefaultIncomingRateLimiter(rateFn),
 			quotas.NewDefaultIncomingRateLimiter(rateFn),
+			quotas.NewDefaultIncomingRateLimiter(namespaceReplicationInducingRateFn),
 			quotas.NewDefaultIncomingRateLimiter(rateFn),
+			serviceConfig.OperatorRPSRatio,
 		),
 		map[string]int{},
 	)
 }
 
 func NamespaceRateLimitInterceptorProvider(
+	serviceName primitives.ServiceName,
 	serviceConfig *Config,
 	namespaceRegistry namespace.Registry,
 	frontendServiceResolver membership.ServiceResolver,
 ) *interceptor.NamespaceRateLimitInterceptor {
-	rateFn := func(namespace string) float64 {
-		return namespaceRPS(
-			serviceConfig.MaxNamespaceRPSPerInstance,
-			serviceConfig.GlobalNamespaceRPS,
-			frontendServiceResolver,
-			namespace,
-		)
+	var globalNamespaceRPS, globalNamespaceVisibilityRPS, globalNamespaceNamespaceReplicationInducingAPIsRPS dynamicconfig.IntPropertyFnWithNamespaceFilter
+
+	switch serviceName {
+	case primitives.FrontendService:
+		globalNamespaceRPS = serviceConfig.GlobalNamespaceRPS
+		globalNamespaceVisibilityRPS = serviceConfig.GlobalNamespaceVisibilityRPS
+		globalNamespaceNamespaceReplicationInducingAPIsRPS = serviceConfig.GlobalNamespaceNamespaceReplicationInducingAPIsRPS
+	case primitives.InternalFrontendService:
+		globalNamespaceRPS = serviceConfig.InternalFEGlobalNamespaceRPS
+		globalNamespaceVisibilityRPS = serviceConfig.InternalFEGlobalNamespaceVisibilityRPS
+		// Internal frontend has no special limit for this set of APIs
+		globalNamespaceNamespaceReplicationInducingAPIsRPS = serviceConfig.InternalFEGlobalNamespaceRPS
+	default:
+		panic("invalid service name")
 	}
 
-	visibilityRateFn := func(namespace string) float64 {
-		return namespaceRPS(
-			serviceConfig.MaxNamespaceVisibilityRPSPerInstance,
-			serviceConfig.GlobalNamespaceVisibilityRPS,
-			frontendServiceResolver,
-			namespace,
-		)
-	}
-	namespaceRateLimiter := quotas.NewNamespaceRateLimiter(
+	rateFn := quotas.ClusterAwareNamespaceSpecificQuotaCalculator{
+		MemberCounter:    frontendServiceResolver,
+		PerInstanceQuota: serviceConfig.MaxNamespaceRPSPerInstance,
+		GlobalQuota:      globalNamespaceRPS,
+	}.GetQuota
+	visibilityRateFn := quotas.ClusterAwareNamespaceSpecificQuotaCalculator{
+		MemberCounter:    frontendServiceResolver,
+		PerInstanceQuota: serviceConfig.MaxNamespaceVisibilityRPSPerInstance,
+		GlobalQuota:      globalNamespaceVisibilityRPS,
+	}.GetQuota
+	namespaceReplicationInducingRateFn := quotas.ClusterAwareNamespaceSpecificQuotaCalculator{
+		MemberCounter:    frontendServiceResolver,
+		PerInstanceQuota: serviceConfig.MaxNamespaceNamespaceReplicationInducingAPIsRPSPerInstance,
+		GlobalQuota:      globalNamespaceNamespaceReplicationInducingAPIsRPS,
+	}.GetQuota
+	namespaceRateLimiter := quotas.NewNamespaceRequestRateLimiter(
 		func(req quotas.Request) quotas.RequestRateLimiter {
 			return configs.NewRequestToRateLimiter(
 				configs.NewNamespaceRateBurst(req.Caller, rateFn, serviceConfig.MaxNamespaceBurstPerInstance),
 				configs.NewNamespaceRateBurst(req.Caller, visibilityRateFn, serviceConfig.MaxNamespaceVisibilityBurstPerInstance),
+				configs.NewNamespaceRateBurst(req.Caller, namespaceReplicationInducingRateFn, serviceConfig.MaxNamespaceNamespaceReplicationInducingAPIsBurstPerInstance),
 				configs.NewNamespaceRateBurst(req.Caller, rateFn, serviceConfig.MaxNamespaceBurstPerInstance),
+				serviceConfig.OperatorRPSRatio,
 			)
 		},
 	)
@@ -296,8 +365,8 @@ func NamespaceCountLimitInterceptorProvider(
 	serviceConfig *Config,
 	namespaceRegistry namespace.Registry,
 	logger log.SnTaggedLogger,
-) *interceptor.NamespaceCountLimitInterceptor {
-	return interceptor.NewNamespaceCountLimitInterceptor(
+) *interceptor.ConcurrentRequestLimitInterceptor {
+	return interceptor.NewConcurrentRequestLimitInterceptor(
 		namespaceRegistry,
 		logger,
 		serviceConfig.MaxNamespaceCountPerInstance,
@@ -333,7 +402,10 @@ func PersistenceRateLimitingParamsProvider(
 		serviceConfig.PersistenceMaxQPS,
 		serviceConfig.PersistenceGlobalMaxQPS,
 		serviceConfig.PersistenceNamespaceMaxQPS,
+		serviceConfig.PersistencePerShardNamespaceMaxQPS,
 		serviceConfig.EnablePersistencePriorityRateLimiting,
+		serviceConfig.OperatorRPSRatio,
+		serviceConfig.PersistenceDynamicRateLimitingParams,
 	)
 }
 
@@ -342,30 +414,25 @@ func VisibilityManagerProvider(
 	persistenceConfig *config.Persistence,
 	metricsHandler metrics.Handler,
 	serviceConfig *Config,
-	esConfig *esclient.Config,
 	esClient esclient.Client,
 	persistenceServiceResolver resolver.ServiceResolver,
-	searchAttributesMapper searchattribute.Mapper,
+	searchAttributesMapperProvider searchattribute.MapperProvider,
 	saProvider searchattribute.Provider,
 ) (manager.VisibilityManager, error) {
 	return visibility.NewManager(
 		*persistenceConfig,
 		persistenceServiceResolver,
-		esConfig.GetVisibilityIndex(),
-		esConfig.GetSecondaryVisibilityIndex(),
 		esClient,
 		nil, // frontend visibility never write
 		saProvider,
-		searchAttributesMapper,
-		serviceConfig.StandardVisibilityPersistenceMaxReadQPS,
-		serviceConfig.StandardVisibilityPersistenceMaxWriteQPS,
-		serviceConfig.AdvancedVisibilityPersistenceMaxReadQPS,
-		serviceConfig.AdvancedVisibilityPersistenceMaxWriteQPS,
-		serviceConfig.EnableReadVisibilityFromES,
-		dynamicconfig.GetStringPropertyFn(visibility.AdvancedVisibilityWritingModeOff), // frontend visibility never write
-		serviceConfig.EnableReadFromSecondaryAdvancedVisibility,
-		dynamicconfig.GetBoolPropertyFn(false), // frontend visibility never write
+		searchAttributesMapperProvider,
+		serviceConfig.VisibilityPersistenceMaxReadQPS,
+		serviceConfig.VisibilityPersistenceMaxWriteQPS,
+		serviceConfig.OperatorRPSRatio,
+		serviceConfig.EnableReadFromSecondaryVisibility,
+		dynamicconfig.GetStringPropertyFn(visibility.SecondaryVisibilityWritingModeOff), // frontend visibility never write
 		serviceConfig.VisibilityDisableOrderByClause,
+		serviceConfig.VisibilityEnableManualPagination,
 		metricsHandler,
 		logger,
 	)
@@ -382,15 +449,17 @@ func FEReplicatorNamespaceReplicationQueueProvider(
 	return replicatorNamespaceReplicationQueue
 }
 
-func ServiceResolverProvider(membershipMonitor membership.Monitor) (membership.ServiceResolver, error) {
-	return membershipMonitor.GetResolver(primitives.FrontendService)
+func ServiceResolverProvider(
+	membershipMonitor membership.Monitor,
+	serviceName primitives.ServiceName,
+) (membership.ServiceResolver, error) {
+	return membershipMonitor.GetResolver(serviceName)
 }
 
 func AdminHandlerProvider(
 	persistenceConfig *config.Persistence,
-	config *Config,
+	configuration *Config,
 	replicatorNamespaceReplicationQueue FEReplicatorNamespaceReplicationQueue,
-	esConfig *esclient.Config,
 	esClient esclient.Client,
 	visibilityMrg manager.VisibilityManager,
 	logger log.SnTaggedLogger,
@@ -404,6 +473,7 @@ func AdminHandlerProvider(
 	historyClient historyservice.HistoryServiceClient,
 	sdkClientFactory sdk.ClientFactory,
 	membershipMonitor membership.Monitor,
+	hostInfoProvider membership.HostInfoProvider,
 	archiverProvider provider.ArchiverProvider,
 	metricsHandler metrics.Handler,
 	namespaceRegistry namespace.Registry,
@@ -417,10 +487,9 @@ func AdminHandlerProvider(
 ) *AdminHandler {
 	args := NewAdminHandlerArgs{
 		persistenceConfig,
-		config,
+		configuration,
 		namespaceReplicationQueue,
 		replicatorNamespaceReplicationQueue,
-		esConfig,
 		esClient,
 		visibilityMrg,
 		logger,
@@ -433,6 +502,7 @@ func AdminHandlerProvider(
 		historyClient,
 		sdkClientFactory,
 		membershipMonitor,
+		hostInfoProvider,
 		archiverProvider,
 		metricsHandler,
 		namespaceRegistry,
@@ -448,33 +518,31 @@ func AdminHandlerProvider(
 }
 
 func OperatorHandlerProvider(
-	config *Config,
-	esConfig *esclient.Config,
+	configuration *Config,
 	esClient esclient.Client,
 	logger log.SnTaggedLogger,
 	sdkClientFactory sdk.ClientFactory,
 	metricsHandler metrics.Handler,
+	visibilityMgr manager.VisibilityManager,
 	saProvider searchattribute.Provider,
 	saManager searchattribute.Manager,
 	healthServer *health.Server,
 	historyClient historyservice.HistoryServiceClient,
-	namespaceRegistry namespace.Registry,
 	clusterMetadataManager persistence.ClusterMetadataManager,
 	clusterMetadata cluster.Metadata,
 	clientFactory client.Factory,
 ) *OperatorHandlerImpl {
 	args := NewOperatorHandlerImplArgs{
-		config,
-		esConfig,
+		configuration,
 		esClient,
 		logger,
 		sdkClientFactory,
 		metricsHandler,
+		visibilityMgr,
 		saProvider,
 		saManager,
 		healthServer,
 		historyClient,
-		namespaceRegistry,
 		clusterMetadataManager,
 		clusterMetadata,
 		clientFactory,
@@ -501,11 +569,12 @@ func HandlerProvider(
 	payloadSerializer serialization.Serializer,
 	timeSource clock.TimeSource,
 	namespaceRegistry namespace.Registry,
-	saMapper searchattribute.Mapper,
+	saMapperProvider searchattribute.MapperProvider,
 	saProvider searchattribute.Provider,
 	clusterMetadata cluster.Metadata,
 	archivalMetadata archiver.ArchivalMetadata,
 	healthServer *health.Server,
+	membershipMonitor membership.Monitor,
 ) Handler {
 	wfHandler := NewWorkflowHandler(
 		serviceConfig,
@@ -521,37 +590,17 @@ func HandlerProvider(
 		archiverProvider,
 		payloadSerializer,
 		namespaceRegistry,
-		saMapper,
+		saMapperProvider,
 		saProvider,
 		clusterMetadata,
 		archivalMetadata,
 		healthServer,
 		timeSource,
+		membershipMonitor,
 	)
-	handler := NewDCRedirectionHandler(wfHandler, dcRedirectionPolicy, logger, clientBean, metricsHandler, timeSource, namespaceRegistry, clusterMetadata)
-	return handler
+	return wfHandler
 }
 
-func ServiceLifetimeHooks(
-	lc fx.Lifecycle,
-	svcStoppedCh chan struct{},
-	svc *Service,
-) {
-	lc.Append(
-		fx.Hook{
-			OnStart: func(context.Context) error {
-				go func(svc common.Daemon, svcStoppedCh chan<- struct{}) {
-					// Start is blocked until Stop() is called.
-					svc.Start()
-					close(svcStoppedCh)
-				}(svc, svcStoppedCh)
-
-				return nil
-			},
-			OnStop: func(ctx context.Context) error {
-				svc.Stop()
-				return nil
-			},
-		},
-	)
+func ServiceLifetimeHooks(lc fx.Lifecycle, svc *Service) {
+	lc.Append(fx.StartStopHook(svc.Start, svc.Stop))
 }

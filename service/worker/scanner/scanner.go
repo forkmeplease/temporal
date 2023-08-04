@@ -37,13 +37,17 @@ import (
 
 	"go.temporal.io/server/api/adminservice/v1"
 	"go.temporal.io/server/api/historyservice/v1"
+	"go.temporal.io/server/api/matchingservice/v1"
+	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/persistence"
+	"go.temporal.io/server/common/persistence/visibility/manager"
 	"go.temporal.io/server/common/sdk"
+	"go.temporal.io/server/service/worker/scanner/build_ids"
 
 	"go.temporal.io/server/common/backoff"
 	"go.temporal.io/server/common/dynamicconfig"
@@ -64,6 +68,8 @@ type (
 		Persistence *config.Persistence
 		// TaskQueueScannerEnabled indicates if taskQueue scanner should be started as part of scanner
 		TaskQueueScannerEnabled dynamicconfig.BoolPropertyFn
+		// BuildIdScavengerEnabled indicates if the build id scavenger should be started as part of scanner
+		BuildIdScavengerEnabled dynamicconfig.BoolPropertyFn
 		// HistoryScannerEnabled indicates if history scanner should be started as part of scanner
 		HistoryScannerEnabled dynamicconfig.BoolPropertyFn
 		// ExecutionsScannerEnabled indicates if executions scanner should be started as part of scanner
@@ -81,29 +87,41 @@ type (
 		ExecutionDataDurationBuffer dynamicconfig.DurationPropertyFn
 		// ExecutionScannerWorkerCount is the execution scavenger task worker number
 		ExecutionScannerWorkerCount dynamicconfig.IntPropertyFn
+		// ExecutionScannerHistoryEventIdValidator indicates if the execution scavenger to validate history event id.
+		ExecutionScannerHistoryEventIdValidator dynamicconfig.BoolPropertyFn
+
+		// RemovableBuildIdDurationSinceDefault is the minimum duration since a build id was last default in its
+		// containing set for it to be considered for removal.
+		RemovableBuildIdDurationSinceDefault dynamicconfig.DurationPropertyFn
+		// BuildIdScavengerVisibilityRPS is the rate limit for visibility calls from the build id scavenger
+		BuildIdScavengerVisibilityRPS dynamicconfig.FloatPropertyFn
 	}
 
-	// scannerContext is the context object that get's
+	// scannerContext is the context object that gets
 	// passed around within the scanner workflows / activities
 	scannerContext struct {
-		cfg               *Config
-		logger            log.Logger
-		sdkClientFactory  sdk.ClientFactory
-		metricsHandler    metrics.Handler
-		executionManager  persistence.ExecutionManager
-		taskManager       persistence.TaskManager
-		historyClient     historyservice.HistoryServiceClient
-		adminClient       adminservice.AdminServiceClient
-		workerFactory     sdk.WorkerFactory
-		namespaceRegistry namespace.Registry
+		cfg                *Config
+		logger             log.Logger
+		sdkClientFactory   sdk.ClientFactory
+		metricsHandler     metrics.Handler
+		executionManager   persistence.ExecutionManager
+		taskManager        persistence.TaskManager
+		visibilityManager  manager.VisibilityManager
+		metadataManager    persistence.MetadataManager
+		historyClient      historyservice.HistoryServiceClient
+		matchingClient     matchingservice.MatchingServiceClient
+		adminClient        adminservice.AdminServiceClient
+		namespaceRegistry  namespace.Registry
+		currentClusterName string
 	}
 
 	// Scanner is the background sub-system that does full scans
 	// of database tables to cleanup resources, monitor anamolies
 	// and emit stats for analytics
 	Scanner struct {
-		context scannerContext
-		wg      sync.WaitGroup
+		context         scannerContext
+		wg              sync.WaitGroup
+		lifecycleCancel context.CancelFunc
 	}
 )
 
@@ -118,24 +136,30 @@ func New(
 	sdkClientFactory sdk.ClientFactory,
 	metricsHandler metrics.Handler,
 	executionManager persistence.ExecutionManager,
+	metadataManager persistence.MetadataManager,
+	visibilityManager manager.VisibilityManager,
 	taskManager persistence.TaskManager,
 	historyClient historyservice.HistoryServiceClient,
 	adminClient adminservice.AdminServiceClient,
+	matchingClient matchingservice.MatchingServiceClient,
 	registry namespace.Registry,
-	workerFactory sdk.WorkerFactory,
+	currentClusterName string,
 ) *Scanner {
 	return &Scanner{
 		context: scannerContext{
-			cfg:               cfg,
-			sdkClientFactory:  sdkClientFactory,
-			logger:            logger,
-			metricsHandler:    metricsHandler,
-			executionManager:  executionManager,
-			taskManager:       taskManager,
-			historyClient:     historyClient,
-			adminClient:       adminClient,
-			workerFactory:     workerFactory,
-			namespaceRegistry: registry,
+			cfg:                cfg,
+			sdkClientFactory:   sdkClientFactory,
+			logger:             logger,
+			metricsHandler:     metricsHandler,
+			executionManager:   executionManager,
+			taskManager:        taskManager,
+			visibilityManager:  visibilityManager,
+			metadataManager:    metadataManager,
+			historyClient:      historyClient,
+			matchingClient:     matchingClient,
+			adminClient:        adminClient,
+			namespaceRegistry:  registry,
+			currentClusterName: currentClusterName,
 		},
 	}
 }
@@ -144,6 +168,7 @@ func New(
 func (s *Scanner) Start() error {
 	ctx := context.WithValue(context.Background(), scannerContextKey, s.context)
 	ctx = headers.SetCallerInfo(ctx, headers.SystemBackgroundCallerInfo)
+	ctx, s.lifecycleCancel = context.WithCancel(ctx)
 
 	workerOpts := worker.Options{
 		MaxConcurrentActivityExecutionSize:     s.context.cfg.MaxConcurrentActivityExecutionSize(),
@@ -157,24 +182,51 @@ func (s *Scanner) Start() error {
 	var workerTaskQueueNames []string
 	if s.context.cfg.ExecutionsScannerEnabled() {
 		s.wg.Add(1)
-		go s.startWorkflowWithRetry(executionsScannerWFStartOptions, executionsScannerWFTypeName)
+		go s.startWorkflowWithRetry(ctx, executionsScannerWFStartOptions, executionsScannerWFTypeName)
 		workerTaskQueueNames = append(workerTaskQueueNames, executionsScannerTaskQueueName)
 	}
 
 	if s.context.cfg.Persistence.DefaultStoreType() == config.StoreTypeSQL && s.context.cfg.TaskQueueScannerEnabled() {
 		s.wg.Add(1)
-		go s.startWorkflowWithRetry(tlScannerWFStartOptions, tqScannerWFTypeName)
+		go s.startWorkflowWithRetry(ctx, tlScannerWFStartOptions, tqScannerWFTypeName)
 		workerTaskQueueNames = append(workerTaskQueueNames, tqScannerTaskQueueName)
 	}
 
 	if s.context.cfg.HistoryScannerEnabled() {
 		s.wg.Add(1)
-		go s.startWorkflowWithRetry(historyScannerWFStartOptions, historyScannerWFTypeName)
+		go s.startWorkflowWithRetry(ctx, historyScannerWFStartOptions, historyScannerWFTypeName)
 		workerTaskQueueNames = append(workerTaskQueueNames, historyScannerTaskQueueName)
 	}
 
+	if s.context.cfg.BuildIdScavengerEnabled() {
+		s.wg.Add(1)
+		go s.startWorkflowWithRetry(ctx, build_ids.BuildIdScavengerWFStartOptions, build_ids.BuildIdScavangerWorkflowName)
+
+		buildIdsActivities := build_ids.NewActivities(
+			s.context.logger,
+			s.context.taskManager,
+			s.context.metadataManager,
+			s.context.visibilityManager,
+			s.context.namespaceRegistry,
+			s.context.matchingClient,
+			s.context.currentClusterName,
+			s.context.cfg.RemovableBuildIdDurationSinceDefault,
+			s.context.cfg.BuildIdScavengerVisibilityRPS,
+		)
+
+		work := s.context.sdkClientFactory.NewWorker(s.context.sdkClientFactory.GetSystemClient(), build_ids.BuildIdScavengerTaskQueueName, workerOpts)
+		work.RegisterWorkflowWithOptions(build_ids.BuildIdScavangerWorkflow, workflow.RegisterOptions{Name: build_ids.BuildIdScavangerWorkflowName})
+		work.RegisterActivityWithOptions(buildIdsActivities.ScavengeBuildIds, activity.RegisterOptions{Name: build_ids.BuildIdScavangerActivityName})
+
+		// TODO: Nothing is gracefully stopping these workers or listening for fatal errors.
+		if err := work.Start(); err != nil {
+			return err
+		}
+	}
+
+	// TODO: There's no reason to register all activities and workflows on every task queue.
 	for _, tl := range workerTaskQueueNames {
-		work := s.context.workerFactory.New(s.context.sdkClientFactory.GetSystemClient(), tl, workerOpts)
+		work := s.context.sdkClientFactory.NewWorker(s.context.sdkClientFactory.GetSystemClient(), tl, workerOpts)
 
 		work.RegisterWorkflowWithOptions(TaskQueueScannerWorkflow, workflow.RegisterOptions{Name: tqScannerWFTypeName})
 		work.RegisterWorkflowWithOptions(HistoryScannerWorkflow, workflow.RegisterOptions{Name: historyScannerWFTypeName})
@@ -183,6 +235,7 @@ func (s *Scanner) Start() error {
 		work.RegisterActivityWithOptions(HistoryScavengerActivity, activity.RegisterOptions{Name: historyScavengerActivityName})
 		work.RegisterActivityWithOptions(ExecutionsScavengerActivity, activity.RegisterOptions{Name: executionsScavengerActivityName})
 
+		// TODO: Nothing is gracefully stopping these workers or listening for fatal errors.
 		if err := work.Start(); err != nil {
 			return err
 		}
@@ -192,37 +245,41 @@ func (s *Scanner) Start() error {
 }
 
 func (s *Scanner) Stop() {
+	s.lifecycleCancel()
 	s.wg.Wait()
 }
 
-func (s *Scanner) startWorkflowWithRetry(
-	options sdkclient.StartWorkflowOptions,
-	workflowType string,
-	workflowArgs ...interface{},
-) {
+func (s *Scanner) startWorkflowWithRetry(ctx context.Context, options sdkclient.StartWorkflowOptions, workflowType string, workflowArgs ...interface{}) {
 	defer s.wg.Done()
 
 	policy := backoff.NewExponentialRetryPolicy(time.Second).
 		WithMaximumInterval(time.Minute).
 		WithExpirationInterval(backoff.NoInterval)
-	err := backoff.ThrottleRetry(func() error {
-		return s.startWorkflow(s.context.sdkClientFactory.GetSystemClient(), options, workflowType, workflowArgs...)
+	err := backoff.ThrottleRetryContext(ctx, func(ctx context.Context) error {
+		return s.startWorkflow(
+			ctx,
+			s.context.sdkClientFactory.GetSystemClient(),
+			options,
+			workflowType,
+			workflowArgs...,
+		)
 	}, policy, func(err error) bool {
 		return true
 	})
-	if err != nil {
+	// if the scanner shuts down before the workflow is started, then the error will be context canceled
+	if err != nil && !common.IsContextCanceledErr(err) {
 		s.context.logger.Fatal("unable to start scanner", tag.WorkflowType(workflowType), tag.Error(err))
 	}
 }
 
 func (s *Scanner) startWorkflow(
+	ctx context.Context,
 	client sdkclient.Client,
 	options sdkclient.StartWorkflowOptions,
 	workflowType string,
 	workflowArgs ...interface{},
 ) error {
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	_, err := client.ExecuteWorkflow(ctx, options, workflowType, workflowArgs...)
 	cancel()
 	if err != nil {

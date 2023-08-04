@@ -39,7 +39,7 @@ import (
 	"go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/quotas"
 	"go.temporal.io/server/common/timer"
-	"go.temporal.io/server/service/history/shard"
+	hshard "go.temporal.io/server/service/history/shard"
 	"go.temporal.io/server/service/history/tasks"
 )
 
@@ -54,18 +54,22 @@ type (
 		newTimeLock sync.Mutex
 		newTime     time.Time
 
+		lookAheadCh               chan struct{}
 		lookAheadRateLimitRequest quotas.Request
 	}
 )
 
 const (
 	lookAheadRateLimitDelay = 3 * time.Second
+
+	lookAheadReaderID = DefaultReaderId
 )
 
 func NewScheduledQueue(
-	shard shard.Context,
+	shard hshard.Context,
 	category tasks.Category,
 	scheduler Scheduler,
+	rescheduler Rescheduler,
 	priorityAssigner PriorityAssigner,
 	executor Executor,
 	options *Options,
@@ -73,7 +77,7 @@ func NewScheduledQueue(
 	logger log.Logger,
 	metricsHandler metrics.Handler,
 ) *scheduledQueue {
-	paginationFnProvider := func(r Range) collection.PaginationFn[tasks.Task] {
+	paginationFnProvider := func(readerID int64, r Range) collection.PaginationFn[tasks.Task] {
 		return func(paginationToken []byte) ([]tasks.Task, []byte, error) {
 			ctx, cancel := newQueueIOContext()
 			defer cancel()
@@ -81,6 +85,7 @@ func NewScheduledQueue(
 			request := &persistence.GetHistoryTasksRequest{
 				ShardID:             shard.GetShardID(),
 				TaskCategory:        category,
+				ReaderID:            readerID,
 				InclusiveMinTaskKey: tasks.NewKey(r.InclusiveMin.FireTime, 0),
 				ExclusiveMaxTaskKey: tasks.NewKey(r.ExclusiveMax.FireTime.Add(persistence.ScheduledTaskMinPrecision), 0),
 				BatchSize:           options.BatchSize(),
@@ -105,16 +110,30 @@ func NewScheduledQueue(
 		}
 	}
 
+	lookAheadCh := make(chan struct{}, 1)
+	readerCompletionFn := func(readerID int64) {
+		if readerID != DefaultReaderId {
+			return
+		}
+
+		select {
+		case lookAheadCh <- struct{}{}:
+		default:
+		}
+	}
+
 	return &scheduledQueue{
 		queueBase: newQueueBase(
 			shard,
 			category,
 			paginationFnProvider,
 			scheduler,
+			rescheduler,
 			priorityAssigner,
 			executor,
 			options,
 			hostRateLimiter,
+			readerCompletionFn,
 			logger,
 			metricsHandler,
 		),
@@ -122,6 +141,7 @@ func NewScheduledQueue(
 		timerGate:  timer.NewLocalGate(shard.GetTimeSource()),
 		newTimerCh: make(chan struct{}, 1),
 
+		lookAheadCh:               lookAheadCh,
 		lookAheadRateLimitRequest: newReaderRequest(DefaultReaderId),
 	}
 }
@@ -160,7 +180,7 @@ func (p *scheduledQueue) Stop() {
 	p.queueBase.Stop()
 }
 
-func (p *scheduledQueue) NotifyNewTasks(_ string, tasks []tasks.Task) {
+func (p *scheduledQueue) NotifyNewTasks(tasks []tasks.Task) {
 	if len(tasks) == 0 {
 		return
 	}
@@ -183,10 +203,18 @@ func (p *scheduledQueue) processEventLoop() {
 		select {
 		case <-p.shutdownCh:
 			return
+		default:
+		}
+
+		select {
+		case <-p.shutdownCh:
+			return
 		case <-p.newTimerCh:
 			p.metricsHandler.Counter(metrics.NewTimerNotifyCounter.GetMetricName()).Record(1)
 			p.processNewTime()
-		case <-p.timerGate.FireChan():
+		case <-p.lookAheadCh:
+			p.lookAheadTask()
+		case <-p.timerGate.FireCh():
 			p.processNewRange()
 		case <-p.checkpointTimer.C:
 			p.checkpoint()
@@ -220,26 +248,6 @@ func (p *scheduledQueue) processNewTime() {
 	p.timerGate.Update(newTime)
 }
 
-func (p *scheduledQueue) processNewRange() {
-	if err := p.queueBase.processNewRange(); err != nil {
-		// This only happens when shard state is invalid,
-		// in which case no look ahead is needed.
-		// Notification will be sent when shard is reacquired, but
-		// still set a max poll timer here as a catch all case.
-		p.timerGate.Update(p.timeSource.Now().Add(backoff.JitDuration(
-			p.options.MaxPollInterval(),
-			p.options.MaxPollIntervalJitterCoefficient(),
-		)))
-		return
-	}
-
-	// Only do look ahead when shard state is valid.
-	// When shard is invalid, even look ahead task is found,
-	// it can't be loaded as scheduled queue max read level can't move
-	// forward.
-	p.lookAheadTask()
-}
-
 func (p *scheduledQueue) lookAheadTask() {
 	rateLimitCtx, rateLimitCancel := context.WithTimeout(context.Background(), lookAheadRateLimitDelay)
 	rateLimitErr := p.readerRateLimiter.Wait(rateLimitCtx, p.lookAheadRateLimitRequest)
@@ -251,7 +259,7 @@ func (p *scheduledQueue) lookAheadTask() {
 	}
 
 	lookAheadMinTime := p.nonReadableScope.Range.InclusiveMin.FireTime
-	lookAheadMaxTime := lookAheadMinTime.Add(backoff.JitDuration(
+	lookAheadMaxTime := lookAheadMinTime.Add(backoff.Jitter(
 		p.options.MaxPollInterval(),
 		p.options.MaxPollIntervalJitterCoefficient(),
 	))
@@ -259,9 +267,16 @@ func (p *scheduledQueue) lookAheadTask() {
 	ctx, cancel := newQueueIOContext()
 	defer cancel()
 
+	if err := p.ensureLookAheadReader(); err != nil {
+		p.logger.Error("Failed to create look ahead reader", tag.Error(err))
+		p.timerGate.Update(lookAheadMinTime)
+		return
+	}
+
 	request := &persistence.GetHistoryTasksRequest{
 		ShardID:             p.shard.GetShardID(),
 		TaskCategory:        p.category,
+		ReaderID:            lookAheadReaderID,
 		InclusiveMinTaskKey: tasks.NewKey(lookAheadMinTime, 0),
 		ExclusiveMaxTaskKey: tasks.NewKey(lookAheadMaxTime, 0),
 		BatchSize:           1,
@@ -291,6 +306,11 @@ func (p *scheduledQueue) lookAheadTask() {
 	// NOTE: with this we don't need a separate max poll timer, loading will be triggerred
 	// every maxPollInterval + jitter.
 	p.timerGate.Update(lookAheadMaxTime)
+}
+
+func (p *scheduledQueue) ensureLookAheadReader() error {
+	_, err := p.readerGroup.GetOrCreateReader(lookAheadReaderID)
+	return err
 }
 
 // IsTimeExpired checks if the testing time is equal or before

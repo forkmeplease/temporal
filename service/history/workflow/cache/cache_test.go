@@ -38,11 +38,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	commonpb "go.temporal.io/api/common/v1"
-
 	persistencespb "go.temporal.io/server/api/persistence/v1"
+	"go.temporal.io/server/common/definition"
 	"go.temporal.io/server/common/dynamicconfig"
+	"go.temporal.io/server/common/headers"
+	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
-	"go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/service/history/shard"
 	"go.temporal.io/server/service/history/tests"
 	"go.temporal.io/server/service/history/workflow"
@@ -78,11 +79,10 @@ func (s *workflowCacheSuite) SetupTest() {
 	s.controller = gomock.NewController(s.T())
 	s.mockShard = shard.NewTestContext(
 		s.controller,
-		&persistence.ShardInfoWithFailover{
-			ShardInfo: &persistencespb.ShardInfo{
-				ShardId: 0,
-				RangeId: 1,
-			}},
+		&persistencespb.ShardInfo{
+			ShardId: 0,
+			RangeId: 1,
+		},
 		tests.NewDynamicConfig(),
 	)
 
@@ -107,7 +107,7 @@ func (s *workflowCacheSuite) TestHistoryCacheBasic() {
 		context.Background(),
 		namespaceID,
 		execution1,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 	ctx.(*workflow.ContextImpl).MutableState = mockMS1
@@ -116,7 +116,7 @@ func (s *workflowCacheSuite) TestHistoryCacheBasic() {
 		context.Background(),
 		namespaceID,
 		execution1,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 	s.Equal(mockMS1, ctx.(*workflow.ContextImpl).MutableState)
@@ -130,7 +130,7 @@ func (s *workflowCacheSuite) TestHistoryCacheBasic() {
 		context.Background(),
 		namespaceID,
 		execution2,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 	s.NotEqual(mockMS1, ctx.(*workflow.ContextImpl).MutableState)
@@ -150,7 +150,7 @@ func (s *workflowCacheSuite) TestHistoryCachePinning() {
 		context.Background(),
 		namespaceID,
 		we,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 
@@ -164,7 +164,7 @@ func (s *workflowCacheSuite) TestHistoryCachePinning() {
 		context.Background(),
 		namespaceID,
 		we2,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.NotNil(err2)
 
@@ -175,7 +175,7 @@ func (s *workflowCacheSuite) TestHistoryCachePinning() {
 		context.Background(),
 		namespaceID,
 		we2,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err3)
 	release2(err3)
@@ -185,7 +185,7 @@ func (s *workflowCacheSuite) TestHistoryCachePinning() {
 		context.Background(),
 		namespaceID,
 		we,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err4)
 	s.False(ctx == newContext)
@@ -205,7 +205,7 @@ func (s *workflowCacheSuite) TestHistoryCacheClear() {
 		context.Background(),
 		namespaceID,
 		we,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 	// since we are just testing whether the release function will clear the cache
@@ -221,7 +221,7 @@ func (s *workflowCacheSuite) TestHistoryCacheClear() {
 		context.Background(),
 		namespaceID,
 		we,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 
@@ -235,7 +235,7 @@ func (s *workflowCacheSuite) TestHistoryCacheClear() {
 		context.Background(),
 		namespaceID,
 		we,
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 	s.Nil(ctx.(*workflow.ContextImpl).MutableState)
@@ -270,7 +270,7 @@ func (s *workflowCacheSuite) TestHistoryCacheConcurrentAccess_Release() {
 				WorkflowId: workflowId,
 				RunId:      runID,
 			},
-			workflow.CallerTypeAPI,
+			workflow.LockPriorityHigh,
 		)
 		s.Nil(err)
 		// since each time the is reset to nil
@@ -295,7 +295,7 @@ func (s *workflowCacheSuite) TestHistoryCacheConcurrentAccess_Release() {
 			WorkflowId: workflowId,
 			RunId:      runID,
 		},
-		workflow.CallerTypeAPI,
+		workflow.LockPriorityHigh,
 	)
 	s.Nil(err)
 	// since we are just testing whether the release function will clear the cache
@@ -342,7 +342,7 @@ func (s *workflowCacheSuite) TestHistoryCacheConcurrentAccess_Pin() {
 					WorkflowId: workflowID,
 					RunId:      runID,
 				},
-				workflow.CallerTypeAPI,
+				workflow.LockPriorityHigh,
 			)
 			if err == nil {
 				break
@@ -363,4 +363,109 @@ func (s *workflowCacheSuite) TestHistoryCacheConcurrentAccess_Pin() {
 		go testFn(i, runIDs[i%runIDCount], &runIDRefCounter[i%runIDCount])
 	}
 	stopGroup.Wait()
+}
+
+func (s *workflowCacheSuite) TestHistoryCache_CacheLatencyMetricContext() {
+	s.cache = NewCache(s.mockShard)
+
+	ctx := metrics.AddMetricsContext(context.Background())
+	_, currentRelease, err := s.cache.GetOrCreateCurrentWorkflowExecution(
+		ctx,
+		tests.NamespaceID,
+		tests.WorkflowID,
+		workflow.LockPriorityHigh,
+	)
+	s.NoError(err)
+	defer currentRelease(nil)
+
+	latency1, ok := metrics.ContextCounterGet(ctx, metrics.HistoryWorkflowExecutionCacheLatency.GetMetricName())
+	s.True(ok)
+	s.NotZero(latency1)
+
+	_, release, err := s.cache.GetOrCreateWorkflowExecution(
+		ctx,
+		tests.NamespaceID,
+		commonpb.WorkflowExecution{
+			WorkflowId: tests.WorkflowID,
+			RunId:      tests.RunID,
+		},
+		workflow.LockPriorityHigh,
+	)
+	s.Nil(err)
+	defer release(nil)
+
+	latency2, ok := metrics.ContextCounterGet(ctx, metrics.HistoryWorkflowExecutionCacheLatency.GetMetricName())
+	s.True(ok)
+	s.Greater(latency2, latency1)
+
+}
+
+func (s *workflowCacheSuite) TestCacheImpl_lockWorkflowExecution() {
+
+	testSets := []struct {
+		name             string
+		shouldLockBefore bool
+		callerType       string
+		withTimeout      bool
+		wantErr          bool
+	}{
+
+		{
+			name:       "API context without timeout without locking beforehand should not return an error",
+			callerType: headers.CallerTypeAPI,
+		},
+		{
+			name:             "API context without timeout with locking beforehand should not return an error",
+			shouldLockBefore: true,
+			callerType:       headers.CallerTypeAPI,
+			wantErr:          true,
+		},
+
+		{
+			name:       "API context with timeout without locking beforehand should not return an error",
+			callerType: headers.CallerTypeAPI,
+		},
+		{
+			name:             "API context with timeout and locking beforehand should return an error",
+			shouldLockBefore: true,
+			callerType:       headers.CallerTypeAPI,
+			wantErr:          true,
+		},
+		{
+			name:       "Non API context with timeout without locking beforehand should return an error",
+			callerType: headers.CallerTypeBackground,
+		},
+		{
+			name:             "Non API context with timeout and locking beforehand should return an error",
+			shouldLockBefore: true,
+			callerType:       headers.CallerTypeBackground,
+			wantErr:          true,
+		},
+	}
+	for _, tt := range testSets {
+		s.Run(tt.name, func() {
+			c := NewCache(s.mockShard).(*CacheImpl)
+			namespaceID := namespace.ID("test_namespace_id")
+			execution := commonpb.WorkflowExecution{
+				WorkflowId: "some random workflow id",
+				RunId:      uuid.New(),
+			}
+			key := definition.NewWorkflowKey(namespaceID.String(), execution.GetWorkflowId(), execution.GetRunId())
+			workflowCtx := workflow.NewContext(c.shard, key, c.logger)
+			ctx := headers.SetCallerType(context.Background(), tt.callerType)
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			if tt.shouldLockBefore {
+				// lock the workflow to allow it to time out
+				err := workflowCtx.Lock(ctx, workflow.LockPriorityHigh)
+				s.Nil(err)
+			}
+
+			if err := c.lockWorkflowExecution(ctx, workflowCtx, key, workflow.LockPriorityHigh); (err != nil) != tt.wantErr {
+				s.T().Errorf("CacheImpl.lockWorkflowExecution() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+		})
+	}
 }

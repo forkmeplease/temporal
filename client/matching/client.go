@@ -39,17 +39,16 @@ import (
 	"go.temporal.io/server/api/matchingservice/v1"
 	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/debug"
-	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
 )
 
 var _ matchingservice.MatchingServiceClient = (*clientImpl)(nil)
 
 const (
-	// DefaultTimeout is the default timeout used to make calls
+	// DefaultTimeout is the max timeout for regular calls
 	DefaultTimeout = time.Minute * debug.TimeoutMultiplier
-	// DefaultLongPollTimeout is the long poll default timeout used to make calls
-	DefaultLongPollTimeout = time.Minute * 2 * debug.TimeoutMultiplier
+	// DefaultLongPollTimeout is the max timeout for long poll calls
+	DefaultLongPollTimeout = time.Minute * 5 * debug.TimeoutMultiplier
 )
 
 type clientImpl struct {
@@ -57,7 +56,6 @@ type clientImpl struct {
 	longPollTimeout time.Duration
 	clients         common.ClientCache
 	loadBalancer    LoadBalancer
-	useOldRouting   dynamicconfig.BoolPropertyFn
 }
 
 // NewClient creates a new history service gRPC client
@@ -66,14 +64,12 @@ func NewClient(
 	longPollTimeout time.Duration,
 	clients common.ClientCache,
 	lb LoadBalancer,
-	useOldRouting dynamicconfig.BoolPropertyFn,
 ) matchingservice.MatchingServiceClient {
 	return &clientImpl{
 		timeout:         timeout,
 		longPollTimeout: longPollTimeout,
 		clients:         clients,
 		loadBalancer:    lb,
-		useOldRouting:   useOldRouting,
 	}
 }
 
@@ -207,12 +203,7 @@ func (c *clientImpl) getClientForTaskqueue(
 	taskQueue *taskqueuepb.TaskQueue,
 	taskQueueType enumspb.TaskQueueType,
 ) (matchingservice.MatchingServiceClient, error) {
-	var key string
-	if c.useOldRouting() {
-		key = taskQueue.Name
-	} else {
-		key = fmt.Sprintf("%s:%s:%d", namespaceID, taskQueue.Name, int(taskQueueType))
-	}
+	key := fmt.Sprintf("%s:%s:%d", namespaceID, taskQueue.Name, int(taskQueueType))
 	client, err := c.clients.GetClientForKey(key)
 	if err != nil {
 		return nil, err

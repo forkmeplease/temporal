@@ -26,6 +26,7 @@ package ndc
 
 import (
 	"context"
+	"math/rand"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -38,7 +39,6 @@ import (
 	"go.temporal.io/server/common/convert"
 	"go.temporal.io/server/common/definition"
 	"go.temporal.io/server/common/log"
-	"go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/versionhistory"
 	"go.temporal.io/server/service/history/shard"
 	"go.temporal.io/server/service/history/tests"
@@ -82,11 +82,10 @@ func (s *conflictResolverSuite) SetupTest() {
 
 	s.mockShard = shard.NewTestContext(
 		s.controller,
-		&persistence.ShardInfoWithFailover{
-			ShardInfo: &persistencespb.ShardInfo{
-				ShardId: 10,
-				RangeId: 1,
-			}},
+		&persistencespb.ShardInfo{
+			ShardId: 10,
+			RangeId: 1,
+		},
 		tests.NewDynamicConfig(),
 	)
 
@@ -141,6 +140,7 @@ func (s *conflictResolverSuite) TestRebuild() {
 	s.mockMutableState.EXPECT().GetExecutionState().Return(&persistencespb.WorkflowExecutionState{
 		RunId: s.runID,
 	}).AnyTimes()
+	s.mockMutableState.EXPECT().GetHistorySize().Return(historySize).AnyTimes()
 
 	workflowKey := definition.NewWorkflowKey(
 		s.namespaceID,
@@ -157,7 +157,8 @@ func (s *conflictResolverSuite) TestRebuild() {
 				),
 			),
 		},
-	).Times(2)
+	).AnyTimes()
+	mockRebuildMutableState.EXPECT().AddHistorySize(historySize)
 	mockRebuildMutableState.EXPECT().SetUpdateCondition(updateCondition, dbVersion)
 
 	s.mockStateBuilder.EXPECT().Rebuild(
@@ -170,10 +171,9 @@ func (s *conflictResolverSuite) TestRebuild() {
 		workflowKey,
 		branchToken1,
 		requestID,
-	).Return(mockRebuildMutableState, historySize, nil)
+	).Return(mockRebuildMutableState, rand.Int63(), nil)
 
 	s.mockContext.EXPECT().Clear()
-	s.mockContext.EXPECT().SetHistorySize(historySize)
 	rebuiltMutableState, err := s.nDCConflictResolver.rebuild(ctx, 1, requestID)
 	s.NoError(err)
 	s.NotNil(rebuiltMutableState)
@@ -238,6 +238,7 @@ func (s *conflictResolverSuite) TestPrepareMutableState_Rebuild() {
 	s.mockMutableState.EXPECT().GetExecutionState().Return(&persistencespb.WorkflowExecutionState{
 		RunId: s.runID,
 	}).AnyTimes()
+	s.mockMutableState.EXPECT().GetHistorySize().Return(historySize).AnyTimes()
 
 	workflowKey := definition.NewWorkflowKey(
 		s.namespaceID,
@@ -254,7 +255,8 @@ func (s *conflictResolverSuite) TestPrepareMutableState_Rebuild() {
 				),
 			),
 		},
-	).Times(2)
+	).AnyTimes()
+	mockRebuildMutableState.EXPECT().AddHistorySize(historySize)
 	mockRebuildMutableState.EXPECT().SetUpdateCondition(updateCondition, dbVersion)
 
 	s.mockStateBuilder.EXPECT().Rebuild(
@@ -267,10 +269,9 @@ func (s *conflictResolverSuite) TestPrepareMutableState_Rebuild() {
 		workflowKey,
 		branchToken1,
 		gomock.Any(),
-	).Return(mockRebuildMutableState, historySize, nil)
+	).Return(mockRebuildMutableState, rand.Int63(), nil)
 
 	s.mockContext.EXPECT().Clear()
-	s.mockContext.EXPECT().SetHistorySize(historySize)
 	rebuiltMutableState, isRebuilt, err := s.nDCConflictResolver.prepareMutableState(ctx, 1, incomingVersion)
 	s.NoError(err)
 	s.NotNil(rebuiltMutableState)

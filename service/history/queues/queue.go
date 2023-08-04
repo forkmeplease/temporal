@@ -25,7 +25,6 @@
 package queues
 
 import (
-	"go.temporal.io/server/common"
 	"go.temporal.io/server/service/history/tasks"
 )
 
@@ -33,11 +32,10 @@ import (
 
 type (
 	Queue interface {
-		common.Daemon
 		Category() tasks.Category
-		NotifyNewTasks(clusterName string, tasks []tasks.Task)
-		FailoverNamespace(namespaceIDs map[string]struct{})
-		LockTaskProcessing()
-		UnlockTaskProcessing()
+		NotifyNewTasks(tasks []tasks.Task)
+		FailoverNamespace(namespaceID string)
+		Start()
+		Stop()
 	}
 )

@@ -85,6 +85,7 @@ type (
 	MapPropertyFnWithNamespaceFilter           func(namespace string) map[string]any
 	StringPropertyFn                           func() string
 	StringPropertyFnWithNamespaceFilter        func(namespace string) string
+	StringPropertyFnWithNamespaceIDFilter      func(namespaceID string) string
 )
 
 const (
@@ -105,14 +106,12 @@ func NewCollection(client Client, logger log.Logger) *Collection {
 	}
 }
 
-func (c *Collection) logError(key Key, err error) {
+func (c *Collection) throttleLog() bool {
 	// TODO: This is a lot of unnecessary contention with little benefit. Consider using
 	// https://github.com/cespare/percpu here.
 	errCount := atomic.AddInt64(&c.errCount, 1)
-	if errCount%errCountLogThreshold == 0 {
-		// log only every 'x' errors to reduce mem allocs and to avoid log noise
-		c.logger.Debug("No such key in dynamic config, using default", tag.Key(key.String()), tag.Error(err))
-	}
+	// log only the first x errors and then one every x after that to reduce log noise
+	return errCount < errCountLogThreshold || errCount%errCountLogThreshold == 0
 }
 
 // GetIntProperty gets property and asserts that it's an integer
@@ -349,6 +348,19 @@ func (c *Collection) GetStringPropertyFnWithNamespaceFilter(key Key, defaultValu
 	}
 }
 
+// GetStringPropertyFnWithNamespaceIDFilter gets property with namespace ID filter and asserts that it's a string
+func (c *Collection) GetStringPropertyFnWithNamespaceIDFilter(key Key, defaultValue any) StringPropertyFnWithNamespaceIDFilter {
+	return func(namespaceID string) string {
+		return matchAndConvert(
+			c,
+			key,
+			defaultValue,
+			namespaceIDPrecedence(namespaceID),
+			convertString,
+		)
+	}
+}
+
 // GetMapPropertyFnWithNamespaceFilter gets property and asserts that it's a map
 func (c *Collection) GetMapPropertyFnWithNamespaceFilter(key Key, defaultValue any) MapPropertyFnWithNamespaceFilter {
 	return func(namespace string) map[string]interface{} {
@@ -406,6 +418,11 @@ func (c *Collection) GetTaskQueuePartitionsProperty(key Key) IntPropertyFnWithTa
 	return c.GetIntPropertyFilteredByTaskQueueInfo(key, defaultNumTaskQueuePartitions)
 }
 
+func (c *Collection) HasKey(key Key) bool {
+	cvs := c.client.GetValue(key)
+	return len(cvs) > 0
+}
+
 func findMatch(cvs, defaultCVs []ConstrainedValue, precedence []Constraints) (any, error) {
 	if len(cvs)+len(defaultCVs) == 0 {
 		return nil, errKeyNotPresent
@@ -446,7 +463,9 @@ func matchAndConvert[T any](
 
 	val, matchErr := findMatch(cvs, defaultCVs, precedence)
 	if matchErr != nil {
-		c.logError(key, matchErr)
+		if c.throttleLog() {
+			c.logger.Debug("No such key in dynamic config, using default", tag.Key(key.String()), tag.Error(matchErr))
+		}
 		// couldn't find a constrained match, use default
 		val = defaultValue
 	}
@@ -455,12 +474,14 @@ func matchAndConvert[T any](
 	if convertErr != nil && matchErr == nil {
 		// We failed to convert the value to the desired type. Try converting the default. note
 		// that if matchErr != nil then val _is_ defaultValue and we don't have to try this again.
-		c.logError(key, convertErr)
+		if c.throttleLog() {
+			c.logger.Warn("Failed to convert value, using default", tag.Key(key.String()), tag.IgnoredValue(val), tag.Error(convertErr))
+		}
 		typedVal, convertErr = converter(defaultValue)
 	}
 	if convertErr != nil {
 		// If we can't convert the default, that's a bug in our code, use Warn level.
-		c.logger.Warn("can't convert default value (this is a bug; fix server code)", tag.Key(key.String()), tag.Error(matchErr))
+		c.logger.Warn("Can't convert default value (this is a bug; fix server code)", tag.Key(key.String()), tag.IgnoredValue(defaultValue), tag.Error(convertErr))
 		// Return typedVal anyway since we have to return something.
 	}
 	return typedVal
@@ -533,8 +554,11 @@ func convertDuration(val any) (time.Duration, error) {
 	switch v := val.(type) {
 	case time.Duration:
 		return v, nil
+	case int:
+		// treat plain int as seconds
+		return time.Duration(v) * time.Second, nil
 	case string:
-		d, err := timestamp.ParseDurationDefaultDays(v)
+		d, err := timestamp.ParseDurationDefaultSeconds(v)
 		if err != nil {
 			return 0, fmt.Errorf("failed to parse duration: %v", err)
 		}

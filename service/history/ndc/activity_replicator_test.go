@@ -100,15 +100,14 @@ func (s *activityReplicatorSuite) SetupTest() {
 	s.mockTimerProcessor = queues.NewMockQueue(s.controller)
 	s.mockTxProcessor.EXPECT().Category().Return(tasks.CategoryTransfer).AnyTimes()
 	s.mockTimerProcessor.EXPECT().Category().Return(tasks.CategoryTimer).AnyTimes()
-	s.mockTxProcessor.EXPECT().NotifyNewTasks(gomock.Any(), gomock.Any()).AnyTimes()
-	s.mockTimerProcessor.EXPECT().NotifyNewTasks(gomock.Any(), gomock.Any()).AnyTimes()
+	s.mockTxProcessor.EXPECT().NotifyNewTasks(gomock.Any()).AnyTimes()
+	s.mockTimerProcessor.EXPECT().NotifyNewTasks(gomock.Any()).AnyTimes()
 	s.mockShard = shard.NewTestContext(
 		s.controller,
-		&persistence.ShardInfoWithFailover{
-			ShardInfo: &persistencespb.ShardInfo{
-				ShardId: 1,
-				RangeId: 1,
-			}},
+		&persistencespb.ShardInfo{
+			ShardId: 1,
+			RangeId: 1,
+		},
 		tests.NewDynamicConfig(),
 	)
 	s.workflowCache = wcache.NewCache(s.mockShard).(*wcache.CacheImpl)
@@ -643,8 +642,8 @@ func (s *activityReplicatorSuite) TestSyncActivity_WorkflowClosed() {
 	key := definition.NewWorkflowKey(namespaceID.String(), workflowID, runID)
 	weContext := workflow.NewMockContext(s.controller)
 	weContext.EXPECT().LoadMutableState(gomock.Any()).Return(s.mockMutableState, nil)
-	weContext.EXPECT().Lock(gomock.Any(), workflow.CallerTypeAPI).Return(nil)
-	weContext.EXPECT().Unlock(workflow.CallerTypeAPI)
+	weContext.EXPECT().Lock(gomock.Any(), workflow.LockPriorityHigh).Return(nil)
+	weContext.EXPECT().Unlock(workflow.LockPriorityHigh)
 	_, err := s.workflowCache.PutIfNotExist(key, weContext)
 	s.NoError(err)
 
@@ -717,8 +716,8 @@ func (s *activityReplicatorSuite) TestSyncActivity_ActivityNotFound() {
 	key := definition.NewWorkflowKey(namespaceID.String(), workflowID, runID)
 	weContext := workflow.NewMockContext(s.controller)
 	weContext.EXPECT().LoadMutableState(gomock.Any()).Return(s.mockMutableState, nil)
-	weContext.EXPECT().Lock(gomock.Any(), workflow.CallerTypeAPI).Return(nil)
-	weContext.EXPECT().Unlock(workflow.CallerTypeAPI)
+	weContext.EXPECT().Lock(gomock.Any(), workflow.LockPriorityHigh).Return(nil)
+	weContext.EXPECT().Unlock(workflow.LockPriorityHigh)
 	_, err := s.workflowCache.PutIfNotExist(key, weContext)
 	s.NoError(err)
 
@@ -792,8 +791,8 @@ func (s *activityReplicatorSuite) TestSyncActivity_ActivityFound_Zombie() {
 	key := definition.NewWorkflowKey(namespaceID.String(), workflowID, runID)
 	weContext := workflow.NewMockContext(s.controller)
 	weContext.EXPECT().LoadMutableState(gomock.Any()).Return(s.mockMutableState, nil)
-	weContext.EXPECT().Lock(gomock.Any(), workflow.CallerTypeAPI).Return(nil)
-	weContext.EXPECT().Unlock(workflow.CallerTypeAPI)
+	weContext.EXPECT().Lock(gomock.Any(), workflow.LockPriorityHigh).Return(nil)
+	weContext.EXPECT().Unlock(workflow.LockPriorityHigh)
 
 	_, err := s.workflowCache.PutIfNotExist(key, weContext)
 	s.NoError(err)
@@ -823,7 +822,6 @@ func (s *activityReplicatorSuite) TestSyncActivity_ActivityFound_Zombie() {
 	s.mockClusterMetadata.EXPECT().IsVersionFromSameCluster(version, version).Return(true)
 
 	weContext.EXPECT().UpdateWorkflowExecutionWithNew(
-		gomock.Any(),
 		gomock.Any(),
 		persistence.UpdateWorkflowModeBypassCurrent,
 		workflow.Context(nil),
@@ -885,8 +883,8 @@ func (s *activityReplicatorSuite) TestSyncActivity_ActivityFound_NonZombie() {
 	key := definition.NewWorkflowKey(namespaceID.String(), workflowID, runID)
 	weContext := workflow.NewMockContext(s.controller)
 	weContext.EXPECT().LoadMutableState(gomock.Any()).Return(s.mockMutableState, nil)
-	weContext.EXPECT().Lock(gomock.Any(), workflow.CallerTypeAPI).Return(nil)
-	weContext.EXPECT().Unlock(workflow.CallerTypeAPI)
+	weContext.EXPECT().Lock(gomock.Any(), workflow.LockPriorityHigh).Return(nil)
+	weContext.EXPECT().Unlock(workflow.LockPriorityHigh)
 	_, err := s.workflowCache.PutIfNotExist(key, weContext)
 	s.NoError(err)
 
@@ -916,7 +914,6 @@ func (s *activityReplicatorSuite) TestSyncActivity_ActivityFound_NonZombie() {
 	s.mockClusterMetadata.EXPECT().IsVersionFromSameCluster(version, version).Return(true)
 
 	weContext.EXPECT().UpdateWorkflowExecutionWithNew(
-		gomock.Any(),
 		gomock.Any(),
 		persistence.UpdateWorkflowModeUpdateCurrent,
 		workflow.Context(nil),

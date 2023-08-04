@@ -40,7 +40,9 @@ import (
 const (
 	skipForZapLogger = 3
 	// we put a default message when it is empty so that the log can be searchable/filterable
-	defaultMsgForEmpty = "none"
+	defaultMsgForEmpty  = "none"
+	testLogFormatEnvVar = "TEMPORAL_TEST_LOG_FORMAT" // set to "json" for json logs in tests
+	testLogLevelEnvVar  = "TEMPORAL_TEST_LOG_LEVEL"  // set to "debug" for debug level logs in tests
 )
 
 type (
@@ -53,14 +55,23 @@ type (
 
 var _ Logger = (*zapLogger)(nil)
 
-// NewTestLogger returns a logger at debug level and log into STDERR
+// NewTestLogger returns a logger for tests
 func NewTestLogger() *zapLogger {
-	return NewZapLogger(BuildZapLogger(Config{
-		// Uncomment next line if you need debug level logging in tests.
-		// Level: "debug",
-		Format:      "console",
+	format := os.Getenv(testLogFormatEnvVar)
+	if format == "" {
+		format = "console"
+	}
+
+	logger := BuildZapLogger(Config{
+		Level:       os.Getenv(testLogLevelEnvVar),
+		Format:      format,
 		Development: true,
-	}))
+	})
+
+	// Don't include stack traces for warnings during tests. Only include them for logs with level error and above.
+	logger = logger.WithOptions(zap.AddStacktrace(zap.ErrorLevel))
+
+	return NewZapLogger(logger)
 }
 
 // NewCLILogger returns a logger at debug level and log into STDERR for logging from within CLI tools

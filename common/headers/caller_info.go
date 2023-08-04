@@ -31,16 +31,22 @@ import (
 )
 
 const (
-	CallerTypeAPI        = "api"
-	CallerTypeBackground = "background"
+	CallerTypeOperator    = "operator"
+	CallerTypeAPI         = "api"
+	CallerTypeBackground  = "background"
+	CallerTypePreemptable = "preemptable"
 
 	CallerNameSystem = "system"
 )
 
 var (
-	SystemBackgroundCallerInfo CallerInfo = CallerInfo{
+	SystemBackgroundCallerInfo = CallerInfo{
 		CallerName: CallerNameSystem,
 		CallerType: CallerTypeBackground,
+	}
+	SystemPreemptableCallerInfo = CallerInfo{
+		CallerName: CallerNameSystem,
+		CallerType: CallerTypePreemptable,
 	}
 )
 
@@ -86,7 +92,19 @@ func NewBackgroundCallerInfo(
 	}
 }
 
-// SetCallerInfo sets callerName, callerType and CcllOrigin in the context.
+// NewPreemptableCallerInfo creates a new CallerInfo with Preemptable callerType
+// and empty callOrigin.
+// This is equivalent to NewCallerInfo(callerName, CallerTypePreemptable, "")
+func NewPreemptableCallerInfo(
+	callerName string,
+) CallerInfo {
+	return CallerInfo{
+		CallerName: callerName,
+		CallerType: CallerTypePreemptable,
+	}
+}
+
+// SetCallerInfo sets callerName, callerType and CallOrigin in the context.
 // Existing values will be overwritten if new value is not empty.
 // TODO: consider only set the caller info to golang context instead of grpc metadata
 // and propagate to grpc outgoing context upon making an rpc call
@@ -96,7 +114,7 @@ func SetCallerInfo(
 ) context.Context {
 	return setIncomingMD(ctx, map[string]string{
 		callerNameHeaderName: info.CallerName,
-		callerTypeHeaderName: info.CallerType,
+		CallerTypeHeaderName: info.CallerType,
 		callOriginHeaderName: info.CallOrigin,
 	})
 }
@@ -116,7 +134,7 @@ func SetCallerType(
 	ctx context.Context,
 	callerType string,
 ) context.Context {
-	return setIncomingMD(ctx, map[string]string{callerTypeHeaderName: callerType})
+	return setIncomingMD(ctx, map[string]string{CallerTypeHeaderName: callerType})
 }
 
 // SetOrigin set call origin in the context.
@@ -151,7 +169,7 @@ func setIncomingMD(
 func GetCallerInfo(
 	ctx context.Context,
 ) CallerInfo {
-	values := GetValues(ctx, callerNameHeaderName, callerTypeHeaderName, callOriginHeaderName)
+	values := GetValues(ctx, callerNameHeaderName, CallerTypeHeaderName, callOriginHeaderName)
 	return CallerInfo{
 		CallerName: values[0],
 		CallerType: values[1],

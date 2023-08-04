@@ -29,7 +29,6 @@ package ndc
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"go.temporal.io/api/serviceerror"
 
@@ -42,7 +41,6 @@ type (
 	transactionMgrForNewWorkflow interface {
 		dispatchForNewWorkflow(
 			ctx context.Context,
-			now time.Time,
 			targetWorkflow Workflow,
 		) error
 	}
@@ -65,9 +63,9 @@ func newTransactionMgrForNewWorkflow(
 
 func (r *nDCTransactionMgrForNewWorkflowImpl) dispatchForNewWorkflow(
 	ctx context.Context,
-	now time.Time,
 	targetWorkflow Workflow,
 ) error {
+
 	// NOTE: this function does NOT mutate current workflow or target workflow,
 	//  workflow mutation is done in methods within executeTransaction function
 
@@ -92,7 +90,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) dispatchForNewWorkflow(
 		// current record does not exists
 		return r.executeTransaction(
 			ctx,
-			now,
 			nDCTransactionPolicyCreateAsCurrent,
 			nil,
 			targetWorkflow,
@@ -119,7 +116,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) dispatchForNewWorkflow(
 		// target workflow is older than current workflow, need to suppress the target workflow
 		return r.executeTransaction(
 			ctx,
-			now,
 			nDCTransactionPolicyCreateAsZombie,
 			currentWorkflow,
 			targetWorkflow,
@@ -132,7 +128,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) dispatchForNewWorkflow(
 		// proceed to create workflow
 		return r.executeTransaction(
 			ctx,
-			now,
 			nDCTransactionPolicyCreateAsCurrent,
 			currentWorkflow,
 			targetWorkflow,
@@ -142,7 +137,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) dispatchForNewWorkflow(
 	// current workflow is still running, need to suppress the current workflow
 	return r.executeTransaction(
 		ctx,
-		now,
 		nDCTransactionPolicySuppressCurrentAndCreateAsCurrent,
 		currentWorkflow,
 		targetWorkflow,
@@ -151,13 +145,11 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) dispatchForNewWorkflow(
 
 func (r *nDCTransactionMgrForNewWorkflowImpl) createAsCurrent(
 	ctx context.Context,
-	now time.Time,
 	currentWorkflow Workflow,
 	targetWorkflow Workflow,
 ) error {
 
 	targetWorkflowSnapshot, targetWorkflowEventsSeq, err := targetWorkflow.GetMutableState().CloseTransactionAsSnapshot(
-		now,
 		workflow.TransactionPolicyPassive,
 	)
 	if err != nil {
@@ -175,7 +167,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) createAsCurrent(
 		}
 		return targetWorkflow.GetContext().CreateWorkflowExecution(
 			ctx,
-			now,
 			createMode,
 			prevRunID,
 			prevLastWriteVersion,
@@ -191,7 +182,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) createAsCurrent(
 	prevLastWriteVersion := int64(0)
 	return targetWorkflow.GetContext().CreateWorkflowExecution(
 		ctx,
-		now,
 		createMode,
 		prevRunID,
 		prevLastWriteVersion,
@@ -203,7 +193,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) createAsCurrent(
 
 func (r *nDCTransactionMgrForNewWorkflowImpl) createAsZombie(
 	ctx context.Context,
-	now time.Time,
 	currentWorkflow Workflow,
 	targetWorkflow Workflow,
 ) error {
@@ -224,7 +213,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) createAsZombie(
 	currentWorkflow = nil
 
 	targetWorkflowSnapshot, targetWorkflowEventsSeq, err := targetWorkflow.GetMutableState().CloseTransactionAsSnapshot(
-		now,
 		targetWorkflowPolicy,
 	)
 	if err != nil {
@@ -232,6 +220,7 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) createAsZombie(
 	}
 
 	if err := targetWorkflow.GetContext().ReapplyEvents(
+		ctx,
 		targetWorkflowEventsSeq,
 	); err != nil {
 		return err
@@ -243,7 +232,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) createAsZombie(
 	prevLastWriteVersion := int64(0)
 	err = targetWorkflow.GetContext().CreateWorkflowExecution(
 		ctx,
-		now,
 		createMode,
 		prevRunID,
 		prevLastWriteVersion,
@@ -264,7 +252,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) createAsZombie(
 
 func (r *nDCTransactionMgrForNewWorkflowImpl) suppressCurrentAndCreateAsCurrent(
 	ctx context.Context,
-	now time.Time,
 	currentWorkflow Workflow,
 	targetWorkflow Workflow,
 ) error {
@@ -281,7 +268,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) suppressCurrentAndCreateAsCurrent(
 
 	return currentWorkflow.GetContext().UpdateWorkflowExecutionWithNew(
 		ctx,
-		now,
 		persistence.UpdateWorkflowModeUpdateCurrent,
 		targetWorkflow.GetContext(),
 		targetWorkflow.GetMutableState(),
@@ -292,7 +278,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) suppressCurrentAndCreateAsCurrent(
 
 func (r *nDCTransactionMgrForNewWorkflowImpl) executeTransaction(
 	ctx context.Context,
-	now time.Time,
 	transactionPolicy nDCTransactionPolicy,
 	currentWorkflow Workflow,
 	targetWorkflow Workflow,
@@ -311,7 +296,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) executeTransaction(
 	case nDCTransactionPolicyCreateAsCurrent:
 		return r.createAsCurrent(
 			ctx,
-			now,
 			currentWorkflow,
 			targetWorkflow,
 		)
@@ -319,7 +303,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) executeTransaction(
 	case nDCTransactionPolicyCreateAsZombie:
 		return r.createAsZombie(
 			ctx,
-			now,
 			currentWorkflow,
 			targetWorkflow,
 		)
@@ -327,7 +310,6 @@ func (r *nDCTransactionMgrForNewWorkflowImpl) executeTransaction(
 	case nDCTransactionPolicySuppressCurrentAndCreateAsCurrent:
 		return r.suppressCurrentAndCreateAsCurrent(
 			ctx,
-			now,
 			currentWorkflow,
 			targetWorkflow,
 		)

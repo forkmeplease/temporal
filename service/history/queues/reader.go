@@ -49,8 +49,6 @@ var (
 
 type (
 	Reader interface {
-		common.Daemon
-
 		Scopes() []Scope
 
 		WalkSlices(SliceIterator)
@@ -61,7 +59,10 @@ type (
 		CompactSlices(SlicePredicate)
 		ShrinkSlices()
 
+		Notify()
 		Pause(time.Duration)
+		Start()
+		Stop()
 	}
 
 	ReaderOptions struct {
@@ -76,16 +77,19 @@ type (
 
 	SlicePredicate func(s Slice) bool
 
+	ReaderCompletionFn func(readerID int64)
+
 	ReaderImpl struct {
 		sync.Mutex
 
-		readerID       int32
+		readerID       int64
 		options        *ReaderOptions
 		scheduler      Scheduler
 		rescheduler    Rescheduler
 		timeSource     clock.TimeSource
 		ratelimiter    quotas.RequestRateLimiter
 		monitor        Monitor
+		completionFn   ReaderCompletionFn
 		logger         log.Logger
 		metricsHandler metrics.Handler
 
@@ -106,8 +110,12 @@ type (
 	}
 )
 
+var (
+	NoopReaderCompletionFn = func(_ int64) {}
+)
+
 func NewReader(
-	readerID int32,
+	readerID int64,
 	slices []Slice,
 	options *ReaderOptions,
 	scheduler Scheduler,
@@ -115,6 +123,7 @@ func NewReader(
 	timeSource clock.TimeSource,
 	ratelimiter quotas.RequestRateLimiter,
 	monitor Monitor,
+	completionFn ReaderCompletionFn,
 	logger log.Logger,
 	metricsHandler metrics.Handler,
 ) *ReaderImpl {
@@ -134,6 +143,7 @@ func NewReader(
 		timeSource:     timeSource,
 		ratelimiter:    ratelimiter,
 		monitor:        monitor,
+		completionFn:   completionFn,
 		logger:         log.With(logger, tag.QueueReaderID(readerID)),
 		metricsHandler: metricsHandler,
 
@@ -239,6 +249,10 @@ func (r *ReaderImpl) SplitSlices(splitter SliceSplitter) {
 }
 
 func (r *ReaderImpl) MergeSlices(incomingSlices ...Slice) {
+	if len(incomingSlices) == 0 {
+		return
+	}
+
 	validateSlicesOrderedDisjoint(incomingSlices)
 
 	r.Lock()
@@ -369,6 +383,18 @@ func (r *ReaderImpl) ShrinkSlices() {
 	r.monitor.SetSliceCount(r.readerID, r.slices.Len())
 }
 
+func (r *ReaderImpl) Notify() {
+	r.Lock()
+	defer r.Unlock()
+
+	if r.throttleTimer != nil {
+		r.throttleTimer.Stop()
+		r.throttleTimer = nil
+	}
+
+	r.notify()
+}
+
 func (r *ReaderImpl) Pause(duration time.Duration) {
 	r.Lock()
 	defer r.Unlock()
@@ -396,6 +422,13 @@ func (r *ReaderImpl) eventLoop() {
 	}()
 
 	for {
+		// prioritize shutdown
+		select {
+		case <-r.shutdownCh:
+			return
+		default:
+		}
+
 		select {
 		case <-r.shutdownCh:
 			return
@@ -427,6 +460,7 @@ func (r *ReaderImpl) loadAndSubmitTasks() {
 	}
 
 	if r.nextReadSlice == nil {
+		r.completionFn(r.readerID)
 		return
 	}
 
@@ -457,7 +491,11 @@ func (r *ReaderImpl) loadAndSubmitTasks() {
 
 	if r.nextReadSlice = r.nextReadSlice.Next(); r.nextReadSlice != nil {
 		r.notify()
+		return
 	}
+
+	// no more task to load, trigger completion callback
+	r.completionFn(r.readerID)
 }
 
 func (r *ReaderImpl) resetNextReadSliceLocked() {
@@ -471,7 +509,11 @@ func (r *ReaderImpl) resetNextReadSliceLocked() {
 
 	if r.nextReadSlice != nil {
 		r.notify()
+		return
 	}
+
+	// no more task to load, trigger completion callback
+	r.completionFn(r.readerID)
 }
 
 func (r *ReaderImpl) notify() {

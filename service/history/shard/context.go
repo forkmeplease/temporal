@@ -34,6 +34,7 @@ import (
 	clockspb "go.temporal.io/server/api/clock/v1"
 	"go.temporal.io/server/api/historyservice/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
+	"go.temporal.io/server/common"
 	"go.temporal.io/server/common/archiver"
 	"go.temporal.io/server/common/clock"
 	"go.temporal.io/server/common/cluster"
@@ -55,6 +56,8 @@ type (
 	// Context represents a history engine shard
 	Context interface {
 		GetShardID() int32
+		GetRangeID() int64
+		GetOwner() string
 		GetExecutionManager() persistence.ExecutionManager
 		GetNamespaceRegistry() namespace.Registry
 		GetClusterMetadata() cluster.Metadata
@@ -64,6 +67,14 @@ type (
 		GetThrottledLogger() log.Logger
 		GetMetricsHandler() metrics.Handler
 		GetTimeSource() clock.TimeSource
+
+		GetRemoteAdminClient(string) (adminservice.AdminServiceClient, error)
+		GetHistoryClient() historyservice.HistoryServiceClient
+		GetPayloadSerializer() serialization.Serializer
+
+		GetSearchAttributesProvider() searchattribute.Provider
+		GetSearchAttributesMapperProvider() searchattribute.MapperProvider
+		GetArchivalMetadata() archiver.ArchivalMetadata
 
 		GetEngine(ctx context.Context) (Engine, error)
 
@@ -75,40 +86,28 @@ type (
 		GenerateTaskIDs(number int) ([]int64, error)
 
 		GetImmediateQueueExclusiveHighReadWatermark() tasks.Key
-		// TODO: remove cluster and singleProcessorMode parameter after deprecating old task procesing logic
-		// In multi-cursor world, there's only one maxReadLevel for scheduled queue for all clusters.
-		UpdateScheduledQueueExclusiveHighReadWatermark(cluster string, singleProcessorMode bool) (tasks.Key, error)
-		GetQueueAckLevel(category tasks.Category) tasks.Key
-		UpdateQueueAckLevel(category tasks.Category, ackLevel tasks.Key) error
-		GetQueueClusterAckLevel(category tasks.Category, cluster string) tasks.Key
-		UpdateQueueClusterAckLevel(category tasks.Category, cluster string, ackLevel tasks.Key) error
+		UpdateScheduledQueueExclusiveHighReadWatermark() (tasks.Key, error)
 		GetQueueState(category tasks.Category) (*persistencespb.QueueState, bool)
-		UpdateQueueState(category tasks.Category, state *persistencespb.QueueState) error
+		SetQueueState(category tasks.Category, state *persistencespb.QueueState) error
+		UpdateReplicationQueueReaderState(readerID int64, readerState *persistencespb.QueueReaderState) error
 
 		GetReplicatorDLQAckLevel(sourceCluster string) int64
 		UpdateReplicatorDLQAckLevel(sourCluster string, ackLevel int64) error
 
-		UpdateFailoverLevel(category tasks.Category, failoverID string, level persistence.FailoverLevel) error
-		DeleteFailoverLevel(category tasks.Category, failoverID string) error
-		GetAllFailoverLevels(category tasks.Category) map[string]persistence.FailoverLevel
-
 		UpdateRemoteClusterInfo(cluster string, ackTaskID int64, ackTimestamp time.Time)
-
-		GetMaxTaskIDForCurrentRangeID() int64
+		UpdateRemoteReaderInfo(readerID int64, ackTaskID int64, ackTimestamp time.Time) error
 
 		SetCurrentTime(cluster string, currentTime time.Time)
 		GetCurrentTime(cluster string) time.Time
-		GetLastUpdatedTime() time.Time
 
 		GetReplicationStatus(cluster []string) (map[string]*historyservice.ShardReplicationStatusPerCluster, map[string]*historyservice.HandoverNamespaceInfo, error)
 
-		GetNamespaceNotificationVersion() int64
-		UpdateNamespaceNotificationVersion(namespaceNotificationVersion int64) error
-		UpdateHandoverNamespaces(newNamespaces []*namespace.Namespace, maxRepTaskID int64)
+		UpdateHandoverNamespace(ns *namespace.Namespace, deletedFromDb bool)
 
 		AppendHistoryEvents(ctx context.Context, request *persistence.AppendHistoryNodesRequest, namespaceID namespace.ID, execution commonpb.WorkflowExecution) (int, error)
 
 		AddTasks(ctx context.Context, request *persistence.AddHistoryTasksRequest) error
+		AddSpeculativeWorkflowTaskTimeoutTask(task *tasks.WorkflowTaskTimeoutTask) error
 		CreateWorkflowExecution(ctx context.Context, request *persistence.CreateWorkflowExecutionRequest) (*persistence.CreateWorkflowExecutionResponse, error)
 		UpdateWorkflowExecution(ctx context.Context, request *persistence.UpdateWorkflowExecutionRequest) (*persistence.UpdateWorkflowExecutionResponse, error)
 		ConflictResolveWorkflowExecution(ctx context.Context, request *persistence.ConflictResolveWorkflowExecutionRequest) (*persistence.ConflictResolveWorkflowExecutionResponse, error)
@@ -119,14 +118,16 @@ type (
 		// If branchToken != nil, then delete history also, otherwise leave history.
 		DeleteWorkflowExecution(ctx context.Context, workflowKey definition.WorkflowKey, branchToken []byte, startTime *time.Time, closeTime *time.Time, closeExecutionVisibilityTaskID int64, stage *tasks.DeleteWorkflowExecutionStage) error
 
-		GetRemoteAdminClient(cluster string) (adminservice.AdminServiceClient, error)
-		GetHistoryClient() historyservice.HistoryServiceClient
-		GetPayloadSerializer() serialization.Serializer
+		UnloadForOwnershipLost()
+	}
 
-		GetSearchAttributesProvider() searchattribute.Provider
-		GetSearchAttributesMapper() searchattribute.Mapper
-		GetArchivalMetadata() archiver.ArchivalMetadata
+	// A ControllableContext is a Context plus other methods needed by
+	// the Controller.
+	ControllableContext interface {
+		Context
+		common.Pingable
 
-		Unload()
+		IsValid() bool
+		FinishStop()
 	}
 )

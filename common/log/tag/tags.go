@@ -307,6 +307,11 @@ func WorkflowTaskQueueName(taskQueueName string) ZapTag {
 
 // size limit
 
+// BlobSize returns tag for BlobSize
+func BlobSize(blobSize int64) ZapTag {
+	return NewInt64("blob-size", blobSize)
+}
+
 // WorkflowSize returns tag for WorkflowSize
 func WorkflowSize(workflowSize int64) ZapTag {
 	return NewInt64("wf-size", workflowSize)
@@ -325,6 +330,11 @@ func WorkflowHistorySize(historySize int) ZapTag {
 // WorkflowHistorySizeBytes returns tag for HistorySizeBytes
 func WorkflowHistorySizeBytes(historySizeBytes int) ZapTag {
 	return NewInt("wf-history-size-bytes", historySizeBytes)
+}
+
+// WorkflowMutableStateSize returns tag for MutableStateSize
+func WorkflowMutableStateSize(mutableStateSize int) ZapTag {
+	return NewInt("wf-mutable-state-size", mutableStateSize)
 }
 
 // WorkflowEventCount returns tag for EventCount
@@ -467,6 +477,11 @@ func RequestCount(c int) ZapTag {
 	return NewInt("request-count", c)
 }
 
+// RPS returns tag for requests per second
+func RPS(c int64) ZapTag {
+	return NewInt64("rps", c)
+}
+
 // Number returns tag for Number
 func Number(n int64) ZapTag {
 	return NewInt64("number", n)
@@ -551,18 +566,13 @@ func ShardQueueAcks(categoryName string, ackLevel interface{}) ZapTag {
 // task queue processor
 
 // QueueReaderID returns tag for queue readerID
-func QueueReaderID(readerID int32) ZapTag {
-	return NewInt32("queue-reader-id", readerID)
+func QueueReaderID(readerID int64) ZapTag {
+	return NewInt64("queue-reader-id", readerID)
 }
 
-// QueueAlertType returns tag for queue alert type
-func QueueAlertType(alertType string) ZapTag {
-	return NewStringTag("queue-alert-type", alertType)
-}
-
-// QueueAlertAttributes returns tag for queue alert attributes
-func QueueAlertAttributes(attributes interface{}) ZapTag {
-	return NewAnyTag("queue-alert-attributes", attributes)
+// QueueAlert returns tag for queue alert
+func QueueAlert(alert interface{}) ZapTag {
+	return NewAnyTag("queue-alert", alert)
 }
 
 // Task returns tag for Task
@@ -609,6 +619,10 @@ func TimerTaskStatus(timerTaskStatus int32) ZapTag {
 // Attempt returns tag for Attempt
 func Attempt(attempt int32) ZapTag {
 	return NewInt32("attempt", attempt)
+}
+
+func WorkflowTaskType(wtType string) ZapTag {
+	return NewStringTag("wt-type", wtType)
 }
 
 // AttemptCount returns tag for AttemptCount
@@ -919,4 +933,8 @@ func DeletedExecutionsErrorCount(count int) ZapTag {
 
 func Endpoint(endpoint string) ZapTag {
 	return NewStringTag("endpoint", endpoint)
+}
+
+func BuildId(buildId string) ZapTag {
+	return NewStringTag("build-id", buildId)
 }

@@ -52,22 +52,22 @@ type (
 
 var (
 	services = []service{
-		service{
+		{
 			name:            "frontend",
 			clientType:      reflect.TypeOf((*workflowservice.WorkflowServiceClient)(nil)),
 			clientGenerator: generateFrontendOrAdminClient,
 		},
-		service{
+		{
 			name:            "admin",
 			clientType:      reflect.TypeOf((*adminservice.AdminServiceClient)(nil)),
 			clientGenerator: generateFrontendOrAdminClient,
 		},
-		service{
+		{
 			name:            "history",
 			clientType:      reflect.TypeOf((*historyservice.HistoryServiceClient)(nil)),
 			clientGenerator: generateHistoryClient,
 		},
-		service{
+		{
 			name:            "matching",
 			clientType:      reflect.TypeOf((*matchingservice.MatchingServiceClient)(nil)),
 			clientGenerator: generateMatchingClient,
@@ -78,15 +78,26 @@ var (
 		"client.frontend.ListArchivedWorkflowExecutions": true,
 		"client.frontend.PollActivityTaskQueue":          true,
 		"client.frontend.PollWorkflowTaskQueue":          true,
+		"client.matching.GetTaskQueueUserData":           true,
 	}
 	largeTimeoutContext = map[string]bool{
 		"client.admin.GetReplicationMessages": true,
 	}
 	ignoreMethod = map[string]bool{
+		// TODO stream APIs are not supported. do not generate.
+		"client.admin.StreamWorkflowReplicationMessages":            true,
+		"metricsClient.admin.StreamWorkflowReplicationMessages":     true,
+		"retryableClient.admin.StreamWorkflowReplicationMessages":   true,
+		"client.history.StreamWorkflowReplicationMessages":          true,
+		"metricsClient.history.StreamWorkflowReplicationMessages":   true,
+		"retryableClient.history.StreamWorkflowReplicationMessages": true,
+
 		// these are non-standard implementations. do not generate.
-		"client.history.DescribeHistoryHost":    true,
-		"client.history.GetReplicationMessages": true,
-		"client.history.GetReplicationStatus":   true,
+		"client.history.DescribeHistoryHost":                    true,
+		"client.history.GetReplicationMessages":                 true,
+		"client.history.GetReplicationStatus":                   true,
+		"client.history.RecordChildExecutionCompleted":          true,
+		"client.history.VerifyChildExecutionCompletionRecorded": true,
 		// these need to pick a partition. too complicated.
 		"client.matching.AddActivityTask":       true,
 		"client.matching.AddWorkflowTask":       true,
@@ -102,12 +113,17 @@ var (
 	}
 )
 
+func panicIfErr(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 func writeTemplatedCode(w io.Writer, service service, text string) {
-	t := template.Must(template.New("code").Parse(text))
-	t.Execute(w, map[string]string{
+	panicIfErr(template.Must(template.New("code").Parse(text)).Execute(w, map[string]string{
 		"ServiceName":        service.name,
 		"ServicePackagePath": service.clientType.Elem().PkgPath(),
-	})
+	}))
 }
 
 func pathToField(t reflect.Type, name string, path string, maxDepth int) string {
@@ -138,17 +154,17 @@ func makeGetHistoryClient(reqType reflect.Type) string {
 	// this magically figures out how to get a HistoryServiceClient from a request
 	t := reqType.Elem() // we know it's a pointer
 	if path := pathToField(t, "ShardId", "request", 1); path != "" {
-		return fmt.Sprintf("client, err := c.getClientForShardID(%s)", path)
+		return fmt.Sprintf("shardID := %s", path)
 	}
-	if path := pathToField(t, "WorkflowId", "request", 3); path != "" {
-		return fmt.Sprintf("client, err := c.getClientForWorkflowID(request.NamespaceId, %s)", path)
+	if path := pathToField(t, "WorkflowId", "request", 4); path != "" {
+		return fmt.Sprintf("shardID := c.shardIDFromWorkflowID(request.NamespaceId, %s)", path)
 	}
 	if path := pathToField(t, "TaskToken", "request", 2); path != "" {
 		return fmt.Sprintf(`taskToken, err := c.tokenSerializer.Deserialize(%s)
 	if err != nil {
 		return nil, err
 	}
-	client, err := c.getClientForWorkflowID(request.NamespaceId, taskToken.GetWorkflowId())
+	shardID := c.shardIDFromWorkflowID(request.NamespaceId, taskToken.GetWorkflowId())
 `, path)
 	}
 	// slice needs a tiny bit of extra handling for namespace
@@ -157,7 +173,7 @@ func makeGetHistoryClient(reqType reflect.Type) string {
 	if len(%s) == 0 {
 		return nil, serviceerror.NewInvalidArgument("missing TaskInfos")
 	}
-	client, err := c.getClientForWorkflowID(%s[0].NamespaceId, %s[0].WorkflowId)`, path, path, path)
+	shardID := c.shardIDFromWorkflowID(%s[0].NamespaceId, %s[0].WorkflowId)`, path, path, path)
 	}
 	panic("I don't know how to get a client from a " + t.String())
 }
@@ -171,11 +187,22 @@ func makeGetMatchingClient(reqType reflect.Type) string {
 
 	var tqtPath string
 	switch t.Name() {
-	case "GetWorkerBuildIdOrderingRequest",
-		"UpdateWorkerBuildIdOrderingRequest",
+	case "GetBuildIdTaskQueueMappingRequest":
+		// Pick a random node for this request, it's not associated with a specific task queue.
+		tqPath = "&taskqueuepb.TaskQueue{Name: fmt.Sprintf(\"not-applicable-%d\", rand.Int())}"
+		tqtPath = "enumspb.TASK_QUEUE_TYPE_UNSPECIFIED"
+		return fmt.Sprintf("client, err := c.getClientForTaskqueue(%s, %s, %s)", nsIDPath, tqPath, tqtPath)
+	case "UpdateTaskQueueUserDataRequest",
+		"ReplicateTaskQueueUserDataRequest":
+		// Always route these requests to the same matching node by namespace.
+		tqPath = "&taskqueuepb.TaskQueue{Name: \"not-applicable\"}"
+		tqtPath = "enumspb.TASK_QUEUE_TYPE_UNSPECIFIED"
+		return fmt.Sprintf("client, err := c.getClientForTaskqueue(%s, %s, %s)", nsIDPath, tqPath, tqtPath)
+	case "GetWorkerBuildIdCompatibilityRequest",
+		"UpdateWorkerBuildIdCompatibilityRequest",
 		"RespondQueryTaskCompletedRequest",
 		"ListTaskQueuePartitionsRequest",
-		"GetTaskQueueMetadataRequest":
+		"ApplyTaskQueueUserDataReplicationEventRequest":
 		tqtPath = "enumspb.TASK_QUEUE_TYPE_WORKFLOW"
 	default:
 		tqtPath = pathToField(t, "TaskQueueType", "request", 2)
@@ -231,8 +258,7 @@ func writeTemplatedMethod(w io.Writer, service service, impl string, m reflect.M
 		}
 	}
 
-	t := template.Must(template.New("code").Parse(text))
-	t.Execute(w, fields)
+	panicIfErr(template.Must(template.New("code").Parse(text)).Execute(w, fields))
 }
 
 func writeTemplatedMethods(w io.Writer, service service, impl string, text string) {
@@ -287,9 +313,6 @@ func (c *clientImpl) {{.Method}}(
 	opts ...grpc.CallOption,
 ) ({{.ResponseType}}, error) {
 	{{.GetClient}}
-	if err != nil {
-		return nil, err
-	}
 	var response {{.ResponseType}}
 	op := func(ctx context.Context, client historyservice.HistoryServiceClient) error {
 		var err error
@@ -298,8 +321,7 @@ func (c *clientImpl) {{.Method}}(
 		response, err = client.{{.Method}}(ctx, request, opts...)
 		return err
 	}
-	err = c.executeWithRedirect(ctx, client, op)
-	if err != nil {
+	if err := c.executeWithRedirect(ctx, shardID, op); err != nil {
 		return nil, err
 	}
 	return response, nil
@@ -318,6 +340,8 @@ package {{.ServiceName}}
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
@@ -337,7 +361,7 @@ func (c *clientImpl) {{.Method}}(
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := c.createContext(ctx)
+	ctx, cancel := c.create{{or .LongPoll ""}}Context(ctx)
 	defer cancel()
 	return client.{{.Method}}(ctx, request, opts...)
 }
@@ -412,12 +436,13 @@ func callWithFile(f func(io.Writer, service), service service, filename string, 
 	if err != nil {
 		panic(err)
 	}
-	fmt.Fprintf(w, "%s\n// Code generated by cmd/tools/rpcwrappers. DO NOT EDIT.\n", licenseText)
-	f(w, service)
-	err = w.Close()
-	if err != nil {
+	defer func() {
+		panicIfErr(w.Close())
+	}()
+	if _, err := fmt.Fprintf(w, "%s\n// Code generated by cmd/tools/rpcwrappers. DO NOT EDIT.\n", licenseText); err != nil {
 		panic(err)
 	}
+	f(w, service)
 }
 
 func readLicenseFile(path string) string {

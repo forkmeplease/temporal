@@ -35,6 +35,7 @@ import (
 	gomock "github.com/golang/mock/gomock"
 	historyservice "go.temporal.io/server/api/historyservice/v1"
 	grpc "google.golang.org/grpc"
+	metadata "google.golang.org/grpc/metadata"
 )
 
 // MockHistoryServiceClient is a mock of HistoryServiceClient interface.
@@ -320,6 +321,46 @@ func (mr *MockHistoryServiceClientMockRecorder) GetShard(ctx, in interface{}, op
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetShard", reflect.TypeOf((*MockHistoryServiceClient)(nil).GetShard), varargs...)
 }
 
+// IsActivityTaskValid mocks base method.
+func (m *MockHistoryServiceClient) IsActivityTaskValid(ctx context.Context, in *historyservice.IsActivityTaskValidRequest, opts ...grpc.CallOption) (*historyservice.IsActivityTaskValidResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []interface{}{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "IsActivityTaskValid", varargs...)
+	ret0, _ := ret[0].(*historyservice.IsActivityTaskValidResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IsActivityTaskValid indicates an expected call of IsActivityTaskValid.
+func (mr *MockHistoryServiceClientMockRecorder) IsActivityTaskValid(ctx, in interface{}, opts ...interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]interface{}{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsActivityTaskValid", reflect.TypeOf((*MockHistoryServiceClient)(nil).IsActivityTaskValid), varargs...)
+}
+
+// IsWorkflowTaskValid mocks base method.
+func (m *MockHistoryServiceClient) IsWorkflowTaskValid(ctx context.Context, in *historyservice.IsWorkflowTaskValidRequest, opts ...grpc.CallOption) (*historyservice.IsWorkflowTaskValidResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []interface{}{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "IsWorkflowTaskValid", varargs...)
+	ret0, _ := ret[0].(*historyservice.IsWorkflowTaskValidResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IsWorkflowTaskValid indicates an expected call of IsWorkflowTaskValid.
+func (mr *MockHistoryServiceClientMockRecorder) IsWorkflowTaskValid(ctx, in interface{}, opts ...interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]interface{}{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsWorkflowTaskValid", reflect.TypeOf((*MockHistoryServiceClient)(nil).IsWorkflowTaskValid), varargs...)
+}
+
 // MergeDLQMessages mocks base method.
 func (m *MockHistoryServiceClient) MergeDLQMessages(ctx context.Context, in *historyservice.MergeDLQMessagesRequest, opts ...grpc.CallOption) (*historyservice.MergeDLQMessagesResponse, error) {
 	m.ctrl.T.Helper()
@@ -358,6 +399,26 @@ func (mr *MockHistoryServiceClientMockRecorder) PollMutableState(ctx, in interfa
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]interface{}{ctx, in}, opts...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PollMutableState", reflect.TypeOf((*MockHistoryServiceClient)(nil).PollMutableState), varargs...)
+}
+
+// PollWorkflowExecutionUpdate mocks base method.
+func (m *MockHistoryServiceClient) PollWorkflowExecutionUpdate(ctx context.Context, in *historyservice.PollWorkflowExecutionUpdateRequest, opts ...grpc.CallOption) (*historyservice.PollWorkflowExecutionUpdateResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []interface{}{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "PollWorkflowExecutionUpdate", varargs...)
+	ret0, _ := ret[0].(*historyservice.PollWorkflowExecutionUpdateResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PollWorkflowExecutionUpdate indicates an expected call of PollWorkflowExecutionUpdate.
+func (mr *MockHistoryServiceClientMockRecorder) PollWorkflowExecutionUpdate(ctx, in interface{}, opts ...interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]interface{}{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PollWorkflowExecutionUpdate", reflect.TypeOf((*MockHistoryServiceClient)(nil).PollWorkflowExecutionUpdate), varargs...)
 }
 
 // PurgeDLQMessages mocks base method.
@@ -600,6 +661,26 @@ func (mr *MockHistoryServiceClientMockRecorder) ReplicateEventsV2(ctx, in interf
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReplicateEventsV2", reflect.TypeOf((*MockHistoryServiceClient)(nil).ReplicateEventsV2), varargs...)
 }
 
+// ReplicateWorkflowState mocks base method.
+func (m *MockHistoryServiceClient) ReplicateWorkflowState(ctx context.Context, in *historyservice.ReplicateWorkflowStateRequest, opts ...grpc.CallOption) (*historyservice.ReplicateWorkflowStateResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []interface{}{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "ReplicateWorkflowState", varargs...)
+	ret0, _ := ret[0].(*historyservice.ReplicateWorkflowStateResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ReplicateWorkflowState indicates an expected call of ReplicateWorkflowState.
+func (mr *MockHistoryServiceClientMockRecorder) ReplicateWorkflowState(ctx, in interface{}, opts ...interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]interface{}{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReplicateWorkflowState", reflect.TypeOf((*MockHistoryServiceClient)(nil).ReplicateWorkflowState), varargs...)
+}
+
 // RequestCancelWorkflowExecution mocks base method.
 func (m *MockHistoryServiceClient) RequestCancelWorkflowExecution(ctx context.Context, in *historyservice.RequestCancelWorkflowExecutionRequest, opts ...grpc.CallOption) (*historyservice.RequestCancelWorkflowExecutionResponse, error) {
 	m.ctrl.T.Helper()
@@ -840,6 +921,26 @@ func (mr *MockHistoryServiceClientMockRecorder) StartWorkflowExecution(ctx, in i
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartWorkflowExecution", reflect.TypeOf((*MockHistoryServiceClient)(nil).StartWorkflowExecution), varargs...)
 }
 
+// StreamWorkflowReplicationMessages mocks base method.
+func (m *MockHistoryServiceClient) StreamWorkflowReplicationMessages(ctx context.Context, opts ...grpc.CallOption) (historyservice.HistoryService_StreamWorkflowReplicationMessagesClient, error) {
+	m.ctrl.T.Helper()
+	varargs := []interface{}{ctx}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "StreamWorkflowReplicationMessages", varargs...)
+	ret0, _ := ret[0].(historyservice.HistoryService_StreamWorkflowReplicationMessagesClient)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// StreamWorkflowReplicationMessages indicates an expected call of StreamWorkflowReplicationMessages.
+func (mr *MockHistoryServiceClientMockRecorder) StreamWorkflowReplicationMessages(ctx interface{}, opts ...interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]interface{}{ctx}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StreamWorkflowReplicationMessages", reflect.TypeOf((*MockHistoryServiceClient)(nil).StreamWorkflowReplicationMessages), varargs...)
+}
+
 // SyncActivity mocks base method.
 func (m *MockHistoryServiceClient) SyncActivity(ctx context.Context, in *historyservice.SyncActivityRequest, opts ...grpc.CallOption) (*historyservice.SyncActivityResponse, error) {
 	m.ctrl.T.Helper()
@@ -900,24 +1001,24 @@ func (mr *MockHistoryServiceClientMockRecorder) TerminateWorkflowExecution(ctx, 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TerminateWorkflowExecution", reflect.TypeOf((*MockHistoryServiceClient)(nil).TerminateWorkflowExecution), varargs...)
 }
 
-// UpdateWorkflow mocks base method.
-func (m *MockHistoryServiceClient) UpdateWorkflow(ctx context.Context, in *historyservice.UpdateWorkflowRequest, opts ...grpc.CallOption) (*historyservice.UpdateWorkflowResponse, error) {
+// UpdateWorkflowExecution mocks base method.
+func (m *MockHistoryServiceClient) UpdateWorkflowExecution(ctx context.Context, in *historyservice.UpdateWorkflowExecutionRequest, opts ...grpc.CallOption) (*historyservice.UpdateWorkflowExecutionResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []interface{}{ctx, in}
 	for _, a := range opts {
 		varargs = append(varargs, a)
 	}
-	ret := m.ctrl.Call(m, "UpdateWorkflow", varargs...)
-	ret0, _ := ret[0].(*historyservice.UpdateWorkflowResponse)
+	ret := m.ctrl.Call(m, "UpdateWorkflowExecution", varargs...)
+	ret0, _ := ret[0].(*historyservice.UpdateWorkflowExecutionResponse)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// UpdateWorkflow indicates an expected call of UpdateWorkflow.
-func (mr *MockHistoryServiceClientMockRecorder) UpdateWorkflow(ctx, in interface{}, opts ...interface{}) *gomock.Call {
+// UpdateWorkflowExecution indicates an expected call of UpdateWorkflowExecution.
+func (mr *MockHistoryServiceClientMockRecorder) UpdateWorkflowExecution(ctx, in interface{}, opts ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]interface{}{ctx, in}, opts...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateWorkflow", reflect.TypeOf((*MockHistoryServiceClient)(nil).UpdateWorkflow), varargs...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateWorkflowExecution", reflect.TypeOf((*MockHistoryServiceClient)(nil).UpdateWorkflowExecution), varargs...)
 }
 
 // VerifyChildExecutionCompletionRecorded mocks base method.
@@ -958,6 +1059,143 @@ func (mr *MockHistoryServiceClientMockRecorder) VerifyFirstWorkflowTaskScheduled
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]interface{}{ctx, in}, opts...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyFirstWorkflowTaskScheduled", reflect.TypeOf((*MockHistoryServiceClient)(nil).VerifyFirstWorkflowTaskScheduled), varargs...)
+}
+
+// MockHistoryService_StreamWorkflowReplicationMessagesClient is a mock of HistoryService_StreamWorkflowReplicationMessagesClient interface.
+type MockHistoryService_StreamWorkflowReplicationMessagesClient struct {
+	ctrl     *gomock.Controller
+	recorder *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder
+}
+
+// MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder is the mock recorder for MockHistoryService_StreamWorkflowReplicationMessagesClient.
+type MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder struct {
+	mock *MockHistoryService_StreamWorkflowReplicationMessagesClient
+}
+
+// NewMockHistoryService_StreamWorkflowReplicationMessagesClient creates a new mock instance.
+func NewMockHistoryService_StreamWorkflowReplicationMessagesClient(ctrl *gomock.Controller) *MockHistoryService_StreamWorkflowReplicationMessagesClient {
+	mock := &MockHistoryService_StreamWorkflowReplicationMessagesClient{ctrl: ctrl}
+	mock.recorder = &MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesClient) EXPECT() *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder {
+	return m.recorder
+}
+
+// CloseSend mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesClient) CloseSend() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CloseSend")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CloseSend indicates an expected call of CloseSend.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) CloseSend() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloseSend", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).CloseSend))
+}
+
+// Context mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesClient) Context() context.Context {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Context")
+	ret0, _ := ret[0].(context.Context)
+	return ret0
+}
+
+// Context indicates an expected call of Context.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) Context() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Context", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).Context))
+}
+
+// Header mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesClient) Header() (metadata.MD, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Header")
+	ret0, _ := ret[0].(metadata.MD)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Header indicates an expected call of Header.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) Header() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Header", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).Header))
+}
+
+// Recv mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesClient) Recv() (*historyservice.StreamWorkflowReplicationMessagesResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Recv")
+	ret0, _ := ret[0].(*historyservice.StreamWorkflowReplicationMessagesResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Recv indicates an expected call of Recv.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) Recv() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Recv", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).Recv))
+}
+
+// RecvMsg mocks base method.
+func (m_2 *MockHistoryService_StreamWorkflowReplicationMessagesClient) RecvMsg(m interface{}) error {
+	m_2.ctrl.T.Helper()
+	ret := m_2.ctrl.Call(m_2, "RecvMsg", m)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RecvMsg indicates an expected call of RecvMsg.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) RecvMsg(m interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecvMsg", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).RecvMsg), m)
+}
+
+// Send mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesClient) Send(arg0 *historyservice.StreamWorkflowReplicationMessagesRequest) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Send", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Send indicates an expected call of Send.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) Send(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Send", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).Send), arg0)
+}
+
+// SendMsg mocks base method.
+func (m_2 *MockHistoryService_StreamWorkflowReplicationMessagesClient) SendMsg(m interface{}) error {
+	m_2.ctrl.T.Helper()
+	ret := m_2.ctrl.Call(m_2, "SendMsg", m)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SendMsg indicates an expected call of SendMsg.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) SendMsg(m interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendMsg", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).SendMsg), m)
+}
+
+// Trailer mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesClient) Trailer() metadata.MD {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Trailer")
+	ret0, _ := ret[0].(metadata.MD)
+	return ret0
+}
+
+// Trailer indicates an expected call of Trailer.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesClientMockRecorder) Trailer() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Trailer", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesClient)(nil).Trailer))
 }
 
 // MockHistoryServiceServer is a mock of HistoryServiceServer interface.
@@ -1178,6 +1416,36 @@ func (mr *MockHistoryServiceServerMockRecorder) GetShard(arg0, arg1 interface{})
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetShard", reflect.TypeOf((*MockHistoryServiceServer)(nil).GetShard), arg0, arg1)
 }
 
+// IsActivityTaskValid mocks base method.
+func (m *MockHistoryServiceServer) IsActivityTaskValid(arg0 context.Context, arg1 *historyservice.IsActivityTaskValidRequest) (*historyservice.IsActivityTaskValidResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsActivityTaskValid", arg0, arg1)
+	ret0, _ := ret[0].(*historyservice.IsActivityTaskValidResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IsActivityTaskValid indicates an expected call of IsActivityTaskValid.
+func (mr *MockHistoryServiceServerMockRecorder) IsActivityTaskValid(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsActivityTaskValid", reflect.TypeOf((*MockHistoryServiceServer)(nil).IsActivityTaskValid), arg0, arg1)
+}
+
+// IsWorkflowTaskValid mocks base method.
+func (m *MockHistoryServiceServer) IsWorkflowTaskValid(arg0 context.Context, arg1 *historyservice.IsWorkflowTaskValidRequest) (*historyservice.IsWorkflowTaskValidResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsWorkflowTaskValid", arg0, arg1)
+	ret0, _ := ret[0].(*historyservice.IsWorkflowTaskValidResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IsWorkflowTaskValid indicates an expected call of IsWorkflowTaskValid.
+func (mr *MockHistoryServiceServerMockRecorder) IsWorkflowTaskValid(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsWorkflowTaskValid", reflect.TypeOf((*MockHistoryServiceServer)(nil).IsWorkflowTaskValid), arg0, arg1)
+}
+
 // MergeDLQMessages mocks base method.
 func (m *MockHistoryServiceServer) MergeDLQMessages(arg0 context.Context, arg1 *historyservice.MergeDLQMessagesRequest) (*historyservice.MergeDLQMessagesResponse, error) {
 	m.ctrl.T.Helper()
@@ -1206,6 +1474,21 @@ func (m *MockHistoryServiceServer) PollMutableState(arg0 context.Context, arg1 *
 func (mr *MockHistoryServiceServerMockRecorder) PollMutableState(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PollMutableState", reflect.TypeOf((*MockHistoryServiceServer)(nil).PollMutableState), arg0, arg1)
+}
+
+// PollWorkflowExecutionUpdate mocks base method.
+func (m *MockHistoryServiceServer) PollWorkflowExecutionUpdate(arg0 context.Context, arg1 *historyservice.PollWorkflowExecutionUpdateRequest) (*historyservice.PollWorkflowExecutionUpdateResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PollWorkflowExecutionUpdate", arg0, arg1)
+	ret0, _ := ret[0].(*historyservice.PollWorkflowExecutionUpdateResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PollWorkflowExecutionUpdate indicates an expected call of PollWorkflowExecutionUpdate.
+func (mr *MockHistoryServiceServerMockRecorder) PollWorkflowExecutionUpdate(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PollWorkflowExecutionUpdate", reflect.TypeOf((*MockHistoryServiceServer)(nil).PollWorkflowExecutionUpdate), arg0, arg1)
 }
 
 // PurgeDLQMessages mocks base method.
@@ -1388,6 +1671,21 @@ func (mr *MockHistoryServiceServerMockRecorder) ReplicateEventsV2(arg0, arg1 int
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReplicateEventsV2", reflect.TypeOf((*MockHistoryServiceServer)(nil).ReplicateEventsV2), arg0, arg1)
 }
 
+// ReplicateWorkflowState mocks base method.
+func (m *MockHistoryServiceServer) ReplicateWorkflowState(arg0 context.Context, arg1 *historyservice.ReplicateWorkflowStateRequest) (*historyservice.ReplicateWorkflowStateResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReplicateWorkflowState", arg0, arg1)
+	ret0, _ := ret[0].(*historyservice.ReplicateWorkflowStateResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ReplicateWorkflowState indicates an expected call of ReplicateWorkflowState.
+func (mr *MockHistoryServiceServerMockRecorder) ReplicateWorkflowState(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReplicateWorkflowState", reflect.TypeOf((*MockHistoryServiceServer)(nil).ReplicateWorkflowState), arg0, arg1)
+}
+
 // RequestCancelWorkflowExecution mocks base method.
 func (m *MockHistoryServiceServer) RequestCancelWorkflowExecution(arg0 context.Context, arg1 *historyservice.RequestCancelWorkflowExecutionRequest) (*historyservice.RequestCancelWorkflowExecutionResponse, error) {
 	m.ctrl.T.Helper()
@@ -1568,6 +1866,20 @@ func (mr *MockHistoryServiceServerMockRecorder) StartWorkflowExecution(arg0, arg
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartWorkflowExecution", reflect.TypeOf((*MockHistoryServiceServer)(nil).StartWorkflowExecution), arg0, arg1)
 }
 
+// StreamWorkflowReplicationMessages mocks base method.
+func (m *MockHistoryServiceServer) StreamWorkflowReplicationMessages(arg0 historyservice.HistoryService_StreamWorkflowReplicationMessagesServer) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StreamWorkflowReplicationMessages", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// StreamWorkflowReplicationMessages indicates an expected call of StreamWorkflowReplicationMessages.
+func (mr *MockHistoryServiceServerMockRecorder) StreamWorkflowReplicationMessages(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StreamWorkflowReplicationMessages", reflect.TypeOf((*MockHistoryServiceServer)(nil).StreamWorkflowReplicationMessages), arg0)
+}
+
 // SyncActivity mocks base method.
 func (m *MockHistoryServiceServer) SyncActivity(arg0 context.Context, arg1 *historyservice.SyncActivityRequest) (*historyservice.SyncActivityResponse, error) {
 	m.ctrl.T.Helper()
@@ -1613,19 +1925,19 @@ func (mr *MockHistoryServiceServerMockRecorder) TerminateWorkflowExecution(arg0,
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TerminateWorkflowExecution", reflect.TypeOf((*MockHistoryServiceServer)(nil).TerminateWorkflowExecution), arg0, arg1)
 }
 
-// UpdateWorkflow mocks base method.
-func (m *MockHistoryServiceServer) UpdateWorkflow(arg0 context.Context, arg1 *historyservice.UpdateWorkflowRequest) (*historyservice.UpdateWorkflowResponse, error) {
+// UpdateWorkflowExecution mocks base method.
+func (m *MockHistoryServiceServer) UpdateWorkflowExecution(arg0 context.Context, arg1 *historyservice.UpdateWorkflowExecutionRequest) (*historyservice.UpdateWorkflowExecutionResponse, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateWorkflow", arg0, arg1)
-	ret0, _ := ret[0].(*historyservice.UpdateWorkflowResponse)
+	ret := m.ctrl.Call(m, "UpdateWorkflowExecution", arg0, arg1)
+	ret0, _ := ret[0].(*historyservice.UpdateWorkflowExecutionResponse)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// UpdateWorkflow indicates an expected call of UpdateWorkflow.
-func (mr *MockHistoryServiceServerMockRecorder) UpdateWorkflow(arg0, arg1 interface{}) *gomock.Call {
+// UpdateWorkflowExecution indicates an expected call of UpdateWorkflowExecution.
+func (mr *MockHistoryServiceServerMockRecorder) UpdateWorkflowExecution(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateWorkflow", reflect.TypeOf((*MockHistoryServiceServer)(nil).UpdateWorkflow), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateWorkflowExecution", reflect.TypeOf((*MockHistoryServiceServer)(nil).UpdateWorkflowExecution), arg0, arg1)
 }
 
 // VerifyChildExecutionCompletionRecorded mocks base method.
@@ -1656,4 +1968,138 @@ func (m *MockHistoryServiceServer) VerifyFirstWorkflowTaskScheduled(arg0 context
 func (mr *MockHistoryServiceServerMockRecorder) VerifyFirstWorkflowTaskScheduled(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyFirstWorkflowTaskScheduled", reflect.TypeOf((*MockHistoryServiceServer)(nil).VerifyFirstWorkflowTaskScheduled), arg0, arg1)
+}
+
+// MockHistoryService_StreamWorkflowReplicationMessagesServer is a mock of HistoryService_StreamWorkflowReplicationMessagesServer interface.
+type MockHistoryService_StreamWorkflowReplicationMessagesServer struct {
+	ctrl     *gomock.Controller
+	recorder *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder
+}
+
+// MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder is the mock recorder for MockHistoryService_StreamWorkflowReplicationMessagesServer.
+type MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder struct {
+	mock *MockHistoryService_StreamWorkflowReplicationMessagesServer
+}
+
+// NewMockHistoryService_StreamWorkflowReplicationMessagesServer creates a new mock instance.
+func NewMockHistoryService_StreamWorkflowReplicationMessagesServer(ctrl *gomock.Controller) *MockHistoryService_StreamWorkflowReplicationMessagesServer {
+	mock := &MockHistoryService_StreamWorkflowReplicationMessagesServer{ctrl: ctrl}
+	mock.recorder = &MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesServer) EXPECT() *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder {
+	return m.recorder
+}
+
+// Context mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesServer) Context() context.Context {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Context")
+	ret0, _ := ret[0].(context.Context)
+	return ret0
+}
+
+// Context indicates an expected call of Context.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) Context() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Context", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).Context))
+}
+
+// Recv mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesServer) Recv() (*historyservice.StreamWorkflowReplicationMessagesRequest, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Recv")
+	ret0, _ := ret[0].(*historyservice.StreamWorkflowReplicationMessagesRequest)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Recv indicates an expected call of Recv.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) Recv() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Recv", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).Recv))
+}
+
+// RecvMsg mocks base method.
+func (m_2 *MockHistoryService_StreamWorkflowReplicationMessagesServer) RecvMsg(m interface{}) error {
+	m_2.ctrl.T.Helper()
+	ret := m_2.ctrl.Call(m_2, "RecvMsg", m)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RecvMsg indicates an expected call of RecvMsg.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) RecvMsg(m interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecvMsg", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).RecvMsg), m)
+}
+
+// Send mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesServer) Send(arg0 *historyservice.StreamWorkflowReplicationMessagesResponse) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Send", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Send indicates an expected call of Send.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) Send(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Send", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).Send), arg0)
+}
+
+// SendHeader mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesServer) SendHeader(arg0 metadata.MD) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SendHeader", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SendHeader indicates an expected call of SendHeader.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) SendHeader(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendHeader", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).SendHeader), arg0)
+}
+
+// SendMsg mocks base method.
+func (m_2 *MockHistoryService_StreamWorkflowReplicationMessagesServer) SendMsg(m interface{}) error {
+	m_2.ctrl.T.Helper()
+	ret := m_2.ctrl.Call(m_2, "SendMsg", m)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SendMsg indicates an expected call of SendMsg.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) SendMsg(m interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendMsg", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).SendMsg), m)
+}
+
+// SetHeader mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesServer) SetHeader(arg0 metadata.MD) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetHeader", arg0)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetHeader indicates an expected call of SetHeader.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) SetHeader(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetHeader", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).SetHeader), arg0)
+}
+
+// SetTrailer mocks base method.
+func (m *MockHistoryService_StreamWorkflowReplicationMessagesServer) SetTrailer(arg0 metadata.MD) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetTrailer", arg0)
+}
+
+// SetTrailer indicates an expected call of SetTrailer.
+func (mr *MockHistoryService_StreamWorkflowReplicationMessagesServerMockRecorder) SetTrailer(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetTrailer", reflect.TypeOf((*MockHistoryService_StreamWorkflowReplicationMessagesServer)(nil).SetTrailer), arg0)
 }

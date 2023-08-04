@@ -22,7 +22,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//go:generate mockgen -copyright_file ../LICENSE -package $GOPACKAGE -source $GOFILE -destination clientFactory_mock.go
+//go:generate mockgen -copyright_file ../LICENSE -package $GOPACKAGE -source $GOFILE -destination client_factory_mock.go
 
 package client
 
@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"go.temporal.io/api/workflowservice/v1"
+	"google.golang.org/grpc"
 
 	"go.temporal.io/server/api/adminservice/v1"
 	"go.temporal.io/server/api/historyservice/v1"
@@ -52,8 +53,8 @@ type (
 	Factory interface {
 		NewHistoryClientWithTimeout(timeout time.Duration) (historyservice.HistoryServiceClient, error)
 		NewMatchingClientWithTimeout(namespaceIDToName NamespaceIDToNameFunc, timeout time.Duration, longPollTimeout time.Duration) (matchingservice.MatchingServiceClient, error)
-		NewRemoteFrontendClientWithTimeout(rpcAddress string, timeout time.Duration, longPollTimeout time.Duration) workflowservice.WorkflowServiceClient
-		NewLocalFrontendClientWithTimeout(timeout time.Duration, longPollTimeout time.Duration) (workflowservice.WorkflowServiceClient, error)
+		NewRemoteFrontendClientWithTimeout(rpcAddress string, timeout time.Duration, longPollTimeout time.Duration) (grpc.ClientConnInterface, workflowservice.WorkflowServiceClient)
+		NewLocalFrontendClientWithTimeout(timeout time.Duration, longPollTimeout time.Duration) (grpc.ClientConnInterface, workflowservice.WorkflowServiceClient, error)
 		NewRemoteAdminClientWithTimeout(rpcAddress string, timeout time.Duration, largeTimeout time.Duration) adminservice.AdminServiceClient
 		NewLocalAdminClientWithTimeout(timeout time.Duration, largeTimeout time.Duration) (adminservice.AdminServiceClient, error)
 	}
@@ -124,13 +125,14 @@ func (cf *rpcClientFactory) NewHistoryClientWithTimeout(timeout time.Duration) (
 		return nil, err
 	}
 
-	keyResolver := newServiceKeyResolver(resolver)
-	clientProvider := func(clientKey string) (interface{}, error) {
-		connection := cf.rpcFactory.CreateInternodeGRPCConnection(clientKey)
-		return historyservice.NewHistoryServiceClient(connection), nil
-	}
-	clientCache := common.NewClientCache(keyResolver, clientProvider)
-	client := history.NewClient(cf.numberOfHistoryShards, timeout, clientCache, cf.logger)
+	client := history.NewClient(
+		cf.dynConfig,
+		resolver,
+		cf.logger,
+		cf.numberOfHistoryShards,
+		cf.rpcFactory,
+		timeout,
+	)
 	if cf.metricsHandler != nil {
 		client = history.NewMetricClient(client, cf.metricsHandler, cf.logger, cf.throttledLogger)
 	}
@@ -157,7 +159,6 @@ func (cf *rpcClientFactory) NewMatchingClientWithTimeout(
 		longPollTimeout,
 		common.NewClientCache(keyResolver, clientProvider),
 		matching.NewLoadBalancer(namespaceIDToName, cf.dynConfig),
-		cf.dynConfig.GetBoolProperty(dynamicconfig.MatchingUseOldRouting, true),
 	)
 
 	if cf.metricsHandler != nil {
@@ -171,19 +172,19 @@ func (cf *rpcClientFactory) NewRemoteFrontendClientWithTimeout(
 	rpcAddress string,
 	timeout time.Duration,
 	longPollTimeout time.Duration,
-) workflowservice.WorkflowServiceClient {
+) (grpc.ClientConnInterface, workflowservice.WorkflowServiceClient) {
 	connection := cf.rpcFactory.CreateRemoteFrontendGRPCConnection(rpcAddress)
 	client := workflowservice.NewWorkflowServiceClient(connection)
-	return cf.newFrontendClient(client, timeout, longPollTimeout)
+	return connection, cf.newFrontendClient(client, timeout, longPollTimeout)
 }
 
 func (cf *rpcClientFactory) NewLocalFrontendClientWithTimeout(
 	timeout time.Duration,
 	longPollTimeout time.Duration,
-) (workflowservice.WorkflowServiceClient, error) {
+) (grpc.ClientConnInterface, workflowservice.WorkflowServiceClient, error) {
 	connection := cf.rpcFactory.CreateLocalFrontendGRPCConnection()
 	client := workflowservice.NewWorkflowServiceClient(connection)
-	return cf.newFrontendClient(client, timeout, longPollTimeout), nil
+	return connection, cf.newFrontendClient(client, timeout, longPollTimeout), nil
 }
 
 func (cf *rpcClientFactory) NewRemoteAdminClientWithTimeout(

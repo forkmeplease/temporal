@@ -25,15 +25,15 @@
 package matching
 
 import (
-	"fmt"
 	"math/rand"
-	"strings"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 
 	"go.temporal.io/server/common/dynamicconfig"
 	"go.temporal.io/server/common/namespace"
+	"go.temporal.io/server/common/tqname"
+	"go.temporal.io/server/common/util"
 )
 
 type (
@@ -66,14 +66,12 @@ type (
 	}
 
 	defaultLoadBalancer struct {
-		nReadPartitions   dynamicconfig.IntPropertyFnWithTaskQueueInfoFilters
-		nWritePartitions  dynamicconfig.IntPropertyFnWithTaskQueueInfoFilters
-		namespaceIDToName func(id namespace.ID) (namespace.Name, error)
+		namespaceIDToName   func(id namespace.ID) (namespace.Name, error)
+		nReadPartitions     dynamicconfig.IntPropertyFnWithTaskQueueInfoFilters
+		nWritePartitions    dynamicconfig.IntPropertyFnWithTaskQueueInfoFilters
+		forceReadPartition  dynamicconfig.IntPropertyFn
+		forceWritePartition dynamicconfig.IntPropertyFn
 	}
-)
-
-const (
-	taskQueuePartitionPrefix = "/_sys/"
 )
 
 // NewLoadBalancer returns an instance of matching load balancer that
@@ -82,11 +80,14 @@ func NewLoadBalancer(
 	namespaceIDToName func(id namespace.ID) (namespace.Name, error),
 	dc *dynamicconfig.Collection,
 ) LoadBalancer {
-	return &defaultLoadBalancer{
-		namespaceIDToName: namespaceIDToName,
-		nReadPartitions:   dc.GetTaskQueuePartitionsProperty(dynamicconfig.MatchingNumTaskqueueReadPartitions),
-		nWritePartitions:  dc.GetTaskQueuePartitionsProperty(dynamicconfig.MatchingNumTaskqueueWritePartitions),
+	lb := &defaultLoadBalancer{
+		namespaceIDToName:   namespaceIDToName,
+		nReadPartitions:     dc.GetTaskQueuePartitionsProperty(dynamicconfig.MatchingNumTaskqueueReadPartitions),
+		nWritePartitions:    dc.GetTaskQueuePartitionsProperty(dynamicconfig.MatchingNumTaskqueueWritePartitions),
+		forceReadPartition:  dc.GetIntProperty(dynamicconfig.TestMatchingLBForceReadPartition, -1),
+		forceWritePartition: dc.GetIntProperty(dynamicconfig.TestMatchingLBForceReadPartition, -1),
 	}
+	return lb
 }
 
 func (lb *defaultLoadBalancer) PickWritePartition(
@@ -95,7 +96,7 @@ func (lb *defaultLoadBalancer) PickWritePartition(
 	taskQueueType enumspb.TaskQueueType,
 	forwardedFrom string,
 ) string {
-	return lb.pickPartition(namespaceID, taskQueue, taskQueueType, forwardedFrom, lb.nWritePartitions)
+	return lb.pickPartition(namespaceID, taskQueue, taskQueueType, forwardedFrom, lb.nWritePartitions, lb.forceWritePartition)
 }
 
 func (lb *defaultLoadBalancer) PickReadPartition(
@@ -104,7 +105,7 @@ func (lb *defaultLoadBalancer) PickReadPartition(
 	taskQueueType enumspb.TaskQueueType,
 	forwardedFrom string,
 ) string {
-	return lb.pickPartition(namespaceID, taskQueue, taskQueueType, forwardedFrom, lb.nReadPartitions)
+	return lb.pickPartition(namespaceID, taskQueue, taskQueueType, forwardedFrom, lb.nReadPartitions, lb.forceReadPartition)
 }
 
 func (lb *defaultLoadBalancer) pickPartition(
@@ -113,31 +114,28 @@ func (lb *defaultLoadBalancer) pickPartition(
 	taskQueueType enumspb.TaskQueueType,
 	forwardedFrom string,
 	nPartitions dynamicconfig.IntPropertyFnWithTaskQueueInfoFilters,
+	force dynamicconfig.IntPropertyFn,
 ) string {
-
 	if forwardedFrom != "" || taskQueue.GetKind() == enumspb.TASK_QUEUE_KIND_STICKY {
 		return taskQueue.GetName()
 	}
 
-	if strings.HasPrefix(taskQueue.GetName(), taskQueuePartitionPrefix) {
-		// this should never happen when forwardedFrom is empty
-		return taskQueue.GetName()
-	}
+	tqName, err := tqname.FromBaseName(taskQueue.GetName())
 
-	namespace, err := lb.namespaceIDToName(namespaceID)
+	// this should never happen when forwardedFrom is empty
 	if err != nil {
 		return taskQueue.GetName()
 	}
 
-	n := nPartitions(namespace.String(), taskQueue.GetName(), taskQueueType)
-	if n <= 0 {
+	if n := force(); n >= 0 {
+		return tqName.WithPartition(n).FullName()
+	}
+
+	nsName, err := lb.namespaceIDToName(namespaceID)
+	if err != nil {
 		return taskQueue.GetName()
 	}
 
-	p := rand.Intn(n)
-	if p == 0 {
-		return taskQueue.GetName()
-	}
-
-	return fmt.Sprintf("%v%v/%v", taskQueuePartitionPrefix, taskQueue.GetName(), p)
+	n := util.Max(1, nPartitions(nsName.String(), tqName.BaseNameString(), taskQueueType))
+	return tqName.WithPartition(rand.Intn(n)).FullName()
 }

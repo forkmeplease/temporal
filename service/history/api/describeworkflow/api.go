@@ -68,6 +68,7 @@ func Invoke(
 			req.Request.Execution.WorkflowId,
 			req.Request.Execution.RunId,
 		),
+		workflow.LockPriorityHigh,
 	)
 	if err != nil {
 		return nil, err
@@ -102,6 +103,9 @@ func Invoke(
 			AutoResetPoints:      executionInfo.AutoResetPoints,
 			TaskQueue:            executionInfo.TaskQueue,
 			StateTransitionCount: executionInfo.StateTransitionCount,
+			HistorySizeBytes:     executionInfo.GetExecutionStats().GetHistorySize(),
+
+			MostRecentWorkerVersionStamp: executionInfo.WorkerVersionStamp,
 		},
 	}
 
@@ -138,12 +142,10 @@ func Invoke(
 				p.LastHeartbeatTime = ai.LastHeartbeatUpdateTime
 				p.HeartbeatDetails = ai.LastHeartbeatDetails
 			}
-			// TODO: move to mutable state instead of loading it from event
-			scheduledEvent, err := mutableState.GetActivityScheduledEvent(ctx, ai.ScheduledEventId)
+			p.ActivityType, err = mutableState.GetActivityType(ctx, ai)
 			if err != nil {
 				return nil, err
 			}
-			p.ActivityType = scheduledEvent.GetActivityTaskScheduledEventAttributes().ActivityType
 			if p.State == enumspb.PENDING_ACTIVITY_STATE_SCHEDULED {
 				p.ScheduledTime = ai.ScheduledTime
 			} else {
@@ -182,7 +184,7 @@ func Invoke(
 		}
 	}
 
-	if pendingWorkflowTask, ok := mutableState.GetPendingWorkflowTask(); ok {
+	if pendingWorkflowTask := mutableState.GetPendingWorkflowTask(); pendingWorkflowTask != nil {
 		result.PendingWorkflowTask = &workflowpb.PendingWorkflowTaskInfo{
 			State:                 enumspb.PENDING_WORKFLOW_TASK_STATE_SCHEDULED,
 			ScheduledTime:         pendingWorkflowTask.ScheduledTime,
@@ -195,7 +197,7 @@ func Invoke(
 		}
 	}
 
-	relocatableAttributes, err := workflow.NewRelocatableAttributesFetcher(persistenceVisibilityMgr).Fetch(ctx, mutableState)
+	relocatableAttributes, err := workflow.RelocatableAttributesFetcherProvider(persistenceVisibilityMgr).Fetch(ctx, mutableState)
 	if err != nil {
 		shard.GetLogger().Error(
 			"Failed to fetch relocatable attributes",

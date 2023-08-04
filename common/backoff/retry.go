@@ -113,57 +113,6 @@ func NewConcurrentRetrier(retryPolicy RetryPolicy) *ConcurrentRetrier {
 	return &ConcurrentRetrier{retrier: retrier}
 }
 
-// Retry function can be used to wrap any call with retry logic using the passed
-// in policy. A `nil` IsRetryable predicate will retry all errors. There is a
-// context-aware version of this function: RetryContext.
-// Deprecated: Use ThrottleRetry
-func Retry(operation Operation, policy RetryPolicy, isRetryable IsRetryable) error {
-	ctxOp := func(context.Context) error { return operation() }
-	return RetryContext(context.Background(), ctxOp, policy, isRetryable)
-}
-
-// RetryContext is a context-aware version of Retry. Context
-// timeout/cancellation errors are never retried, regardless of IsRetryable.
-// Deprecated: use ThrottleRetryContext,
-func RetryContext(
-	ctx context.Context,
-	operation OperationCtx,
-	policy RetryPolicy,
-	isRetryable IsRetryable,
-) error {
-	var err error
-	var next time.Duration
-
-	if isRetryable == nil {
-		isRetryable = func(error) bool { return true }
-	}
-
-	r := NewRetrier(policy, SystemClock)
-	for ctx.Err() == nil {
-		if err = operation(ctx); err == nil {
-			return nil
-		}
-
-		if next = r.NextBackOff(); next == done {
-			return err
-		}
-
-		// stop retrying if context has expired or the error
-		// is not retryable (err is known to be non-nil here)
-		if err == ctx.Err() || !isRetryable(err) {
-			return err
-		}
-
-		t := time.NewTimer(next)
-		select {
-		case <-t.C:
-		case <-ctx.Done():
-			t.Stop()
-		}
-	}
-	return ctx.Err()
-}
-
 // ThrottleRetry is a resource aware version of Retry.
 // Resource exhausted error will be retried using a different throttle retry policy, instead of the specified one.
 func ThrottleRetry(operation Operation, policy RetryPolicy, isRetryable IsRetryable) error {
@@ -188,6 +137,8 @@ func ThrottleRetryContext(
 		isRetryable = func(error) bool { return true }
 	}
 
+	deadline, hasDeadline := ctx.Deadline()
+
 	r := NewRetrier(policy, SystemClock)
 	t := NewRetrier(throttleRetryPolicy, SystemClock)
 	for ctx.Err() == nil {
@@ -207,6 +158,10 @@ func ThrottleRetryContext(
 			next = util.Max(next, t.NextBackOff())
 		}
 
+		if hasDeadline && SystemClock.Now().Add(next).After(deadline) {
+			break
+		}
+
 		timer := time.NewTimer(next)
 		select {
 		case <-timer.C:
@@ -214,7 +169,11 @@ func ThrottleRetryContext(
 			timer.Stop()
 		}
 	}
-
+	// always return the last error we got from operation, even if it is not useful
+	// this retry utility does not have enough information to do any filtering/mapping
+	if err != nil {
+		return err
+	}
 	return ctx.Err()
 }
 

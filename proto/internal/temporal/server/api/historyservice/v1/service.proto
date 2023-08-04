@@ -81,6 +81,10 @@ service HistoryService {
     rpc RespondWorkflowTaskFailed (RespondWorkflowTaskFailedRequest) returns (RespondWorkflowTaskFailedResponse) {
     }
 
+    // IsWorkflowTaskValid is called by matching service checking whether the workflow task is valid.
+    rpc IsWorkflowTaskValid (IsWorkflowTaskValidRequest) returns (IsWorkflowTaskValidResponse) {
+    }
+
     // RecordActivityTaskHeartbeat is called by application worker while it is processing an ActivityTask.  If worker fails
     // to heartbeat within 'heartbeatTimeoutSeconds' interval for the ActivityTask, then it will be marked as timedout and
     // 'ActivityTaskTimedOut' event will be written to the workflow history.  Calling 'RecordActivityTaskHeartbeat' will
@@ -111,6 +115,10 @@ service HistoryService {
     // PollActivityTaskQueue API call for completion. It fails with 'EntityNotExistsError' if the taskToken is not valid
     // anymore due to activity timeout.
     rpc RespondActivityTaskCanceled (RespondActivityTaskCanceledRequest) returns (RespondActivityTaskCanceledResponse) {
+    }
+
+    // IsActivityTaskValid is called by matching service checking whether the workflow task is valid.
+    rpc IsActivityTaskValid (IsActivityTaskValidRequest) returns (IsActivityTaskValidResponse) {
     }
 
     // SignalWorkflowExecution is used to send a signal event to running workflow execution.  This results in
@@ -192,7 +200,12 @@ service HistoryService {
     rpc DescribeWorkflowExecution (DescribeWorkflowExecutionRequest) returns (DescribeWorkflowExecutionResponse) {
     }
 
+    // ReplicateEventsV2 replicates workflow history events
     rpc ReplicateEventsV2 (ReplicateEventsV2Request) returns (ReplicateEventsV2Response) {
+    }
+
+    // ReplicateWorkflowState replicates workflow state
+    rpc ReplicateWorkflowState(ReplicateWorkflowStateRequest) returns (ReplicateWorkflowStateResponse) {
     }
 
     // SyncShardStatus sync the status between shards.
@@ -275,7 +288,15 @@ service HistoryService {
     }
 
     // (-- api-linter: core::0134=disabled
-    //     aip.dev/not-precedent: This service does not follow the update method AIP --)
-    rpc UpdateWorkflow(UpdateWorkflowRequest) returns (UpdateWorkflowResponse) {
+    //     aip.dev/not-precedent: This service does not follow the update method API --)
+    rpc UpdateWorkflowExecution(UpdateWorkflowExecutionRequest) returns (UpdateWorkflowExecutionResponse) {
+    }
+
+    // (-- api-linter: core::0134=disabled
+    //     aip.dev/not-precedent: This service does not follow the update method API --)
+    rpc PollWorkflowExecutionUpdate(PollWorkflowExecutionUpdateRequest) returns (PollWorkflowExecutionUpdateResponse){
+    }
+
+    rpc StreamWorkflowReplicationMessages(stream StreamWorkflowReplicationMessagesRequest) returns (stream StreamWorkflowReplicationMessagesResponse) {
     }
 }
